@@ -13,10 +13,14 @@ dist-ssr
 *.local
 
 
+# Generated docs / local artifacts
 docs/
-CONSOLIDATED_UX_DESIGN.md
-.windsurf/
 documentation.md
+FINAL_IMPLEMENTATION_SUMMARY.md
+
+# Windsurf workspace settings
+.windsurf/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
