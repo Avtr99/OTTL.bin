@@ -480,8 +480,9 @@ export function AddTransformationModal({
             selectedKey={selectedCategory}
             onSelectionChange={(key) => setSelectedCategory(key as string)}
             variant="underlined"
+            className="w-full"
             classNames={{
-              tabList: 'gap-6 text-text-secondary',
+              tabList: 'flex-nowrap gap-6 text-text-secondary overflow-x-auto no-scrollbar',
               cursor: 'bg-primary/20',
             }}
           >
