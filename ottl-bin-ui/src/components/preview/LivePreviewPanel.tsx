@@ -1,15 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import {
-  Card,
-  CardHeader,
-  CardBody,
-  Button,
-  Chip,
-  Tabs,
-  Tab,
-  Spinner,
-  Tooltip,
-} from '@heroui/react';
+import { Card, CardHeader, CardBody, Button, Chip, Spinner, Tooltip } from '@heroui/react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -19,6 +9,7 @@ import {
   ShieldCheck,
   AlertTriangle,
   PencilLine,
+  Maximize2,
 } from 'lucide-react';
 
 type PreviewRecord = Record<string, unknown> | null;
@@ -37,6 +28,8 @@ export interface LivePreviewPanelProps {
   onQuickAction?: (actionId: string, entry: DiffEntry) => void;
   isLoading?: boolean;
   errorMessage?: string;
+  variant?: 'default' | 'modal';
+  onExpandRequest?: () => void;
 }
 
 export interface LivePreviewQuickAction {
@@ -128,6 +121,8 @@ export function LivePreviewPanel({
   onQuickAction,
   isLoading = false,
   errorMessage,
+  variant = 'default',
+  onExpandRequest,
 }: LivePreviewPanelProps) {
   const hasData = Boolean(before || after);
   const hasError = Boolean(errorMessage);
@@ -162,42 +157,39 @@ export function LivePreviewPanel({
   const addedCount = diffEntries.filter((entry) => entry.status === 'added').length;
   const removedCount = diffEntries.filter((entry) => entry.status === 'removed').length;
 
+  const cardHeightClass =
+    variant === 'modal'
+      ? 'h-[75vh]'
+      : 'h-full min-h-[640px] max-h-[calc(100vh-16rem)]';
+
   return (
     <Card
       shadow="md"
       radius="lg"
-      className="bg-surface border border-border/60 text-text-primary h-full"
+      className={`bg-surface border border-border/60 text-text-primary flex flex-col flex-1 ${cardHeightClass}`}
     >
-      <CardHeader className="flex flex-col gap-3 px-4 py-4 border-b border-border/60">
+      <CardHeader className="flex flex-col gap-3 px-4 py-4 border-b border-border/60 flex-shrink-0">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <Chip size="sm" color="secondary" variant="flat">
-              Step {Math.max(currentStep, 1)} of {Math.max(totalSteps, 1)}
+            <Sparkles size={18} className="text-primary" />
+            <h3 className="text-lg font-semibold text-text-primary">Live Preview</h3>
+            <Chip size="sm" variant="flat" color="primary" className="border border-primary/40">
+              Step {currentStep} of {totalSteps}
             </Chip>
-            <Tabs
-              size="sm"
-              selectedKey="before-after"
-              aria-label="Preview mode"
-              classNames={{
-                tabList: 'bg-background-soft/70 border border-border/60 rounded-lg p-1',
-                tab: 'px-3 text-xs text-text-secondary',
-                tabContent: 'w-full flex items-center justify-center gap-2',
-                cursor: 'bg-primary/20',
-              }}
-            >
-              <Tab
-                key="before-after"
-                title={
-                  <div className="flex items-center gap-2">
-                    <Sparkles size={14} />
-                    Diff Explorer
-                  </div>
-                }
-              />
-            </Tabs>
           </div>
-
           <div className="flex items-center gap-2">
+            {onExpandRequest && variant !== 'modal' && (
+              <Button
+                isIconOnly
+                size="sm"
+                variant="light"
+                className="text-text-secondary hover:text-text-primary"
+                onPress={onExpandRequest}
+                aria-label="Expand live preview"
+              >
+                <Maximize2 size={16} />
+              </Button>
+            )}
             <span className="text-xs uppercase tracking-wide text-text-secondary/80">
               Sample {currentSample} / {Math.max(totalSamples, 1)}
             </span>
@@ -241,7 +233,7 @@ export function LivePreviewPanel({
         </div>
       </CardHeader>
 
-      <CardBody className="px-4 py-4">
+      <CardBody className="px-4 py-4 overflow-y-auto flex-1">
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-16 gap-3 text-text-secondary">
             <Spinner color="secondary" label="Processing telemetry sample..." labelColor="secondary" />
@@ -277,7 +269,7 @@ export function LivePreviewPanel({
                   {(before && Object.keys(before).length) || 0} attributes
                 </Chip>
               </div>
-              <div className="rounded-xl border border-border/60 bg-background-soft/80 shadow-inner max-h-96 overflow-auto">
+              <div className="rounded-xl border border-border/60 bg-background-soft/80 shadow-inner overflow-auto">
                 <ul className="divide-y divide-border/60">
                   {flattenRecord(before).map((entry) => (
                     <li
@@ -300,7 +292,7 @@ export function LivePreviewPanel({
                 </Chip>
               </div>
 
-              <div className="rounded-xl border border-border/60 bg-background-soft/80 shadow-inner max-h-96 overflow-auto">
+              <div className="rounded-xl border border-border/60 bg-background-soft/80 shadow-inner overflow-auto">
                 <ul className="divide-y divide-border/60">
                   {diffEntries.map((entry) => {
                     const isSelected = selectedEntry?.key === entry.key;

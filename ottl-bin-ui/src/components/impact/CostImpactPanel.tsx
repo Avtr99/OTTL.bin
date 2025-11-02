@@ -1,6 +1,5 @@
-import { useState } from 'react';
-import { Card, CardHeader, CardBody, Chip, Progress, Button } from '@heroui/react';
-import { TrendingDown, DollarSign, Database, Zap, ChevronDown, ChevronUp } from 'lucide-react';
+import { Card, CardHeader, CardBody, Chip, Progress } from '@heroui/react';
+import { TrendingDown, DollarSign, Database, Zap, Activity } from 'lucide-react';
 
 export interface ImpactMetrics {
   storageReduction?: number; // percentage
@@ -14,20 +13,18 @@ export interface ImpactMetrics {
   averageRecordSizeAfter?: number; // bytes
   estimatedMonthlyCostBefore?: number; // dollars
   estimatedMonthlyCostAfter?: number; // dollars
-  recordsPerHour?: number;
   sourceName?: string;
 }
 
 interface CostImpactPanelProps {
   metrics?: ImpactMetrics;
-  isLoading?: boolean;
 }
 
 /**
  * CostImpactPanel - Cost and impact analysis
  * Shows storage reduction, cost savings, and affected records (FR-9)
  */
-export function CostImpactPanel({ metrics, isLoading = false }: CostImpactPanelProps) {
+export function CostImpactPanel({ metrics }: CostImpactPanelProps) {
   if (!metrics) {
     return (
       <Card shadow="sm" radius="lg" className="bg-surface/95 border border-border/60">
@@ -59,15 +56,12 @@ export function CostImpactPanel({ metrics, isLoading = false }: CostImpactPanelP
     averageRecordSizeAfter,
     estimatedMonthlyCostBefore,
     estimatedMonthlyCostAfter,
-    recordsPerHour,
     sourceName,
   } = metrics;
 
   const recordsPercentage = totalRecords > 0 
     ? Math.round((recordsAffected / totalRecords) * 100)
     : 0;
-
-  const [showRemovedAttributes, setShowRemovedAttributes] = useState(false);
 
   const averageBeforeKb = typeof averageRecordSizeBefore === 'number'
     ? averageRecordSizeBefore / 1024
@@ -84,7 +78,7 @@ export function CostImpactPanel({ metrics, isLoading = false }: CostImpactPanelP
     ? Math.max(0, costBefore - costAfter)
     : 0;
 
-  const formattedSavings = computedMonthlySavings > 0
+  const formattedSavings = computedMonthlySavings !== null && computedMonthlySavings !== undefined
     ? `$${computedMonthlySavings.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
     : null;
 
@@ -93,7 +87,7 @@ export function CostImpactPanel({ metrics, isLoading = false }: CostImpactPanelP
       <CardHeader className="px-4 py-3 border-b border-border/60">
         <div className="flex flex-wrap items-center gap-2">
           <Zap className="text-secondary" size={20} />
-          <h3 className="text-lg font-semibold">Cost & Impact Analysis</h3>
+          <h3 className="text-lg font-semibold">Cost & Impact</h3>
           {sourceName && (
             <Chip size="sm" variant="flat" className="bg-background-soft/70 border border-border/60 text-text-secondary">
               {sourceName}
@@ -103,17 +97,65 @@ export function CostImpactPanel({ metrics, isLoading = false }: CostImpactPanelP
       </CardHeader>
 
       <CardBody className="px-4 py-4 space-y-4">
-        {/* Storage Reduction */}
+        <div className="grid gap-4 lg:grid-cols-4">
+          <MetricCard
+            icon={<TrendingDown size={16} />}
+            label="Storage Reduction"
+            primary={{
+              value:
+                storageReduction !== null && storageReduction !== undefined
+                  ? `-${storageReduction}%`
+                  : '—',
+              hint: sizeReduction ? `~${sizeReduction} saved` : undefined,
+            }}
+          />
+          <MetricCard
+            icon={<DollarSign size={16} />}
+            label="Monthly Savings"
+            primary={{ value: formattedSavings ?? '—' }}
+            secondary={
+              costBefore !== undefined && costAfter !== undefined
+                ? {
+                    label: 'Before → After',
+                    value: `$${costBefore.toLocaleString()} → $${costAfter.toLocaleString()}`,
+                  }
+                : undefined
+            }
+          />
+          <MetricCard
+            icon={<Activity size={16} />}
+            label="Records Impacted"
+            primary={{
+              value: totalRecords > 0 ? `${recordsAffected.toLocaleString()} / ${totalRecords.toLocaleString()}` : '—',
+              hint: totalRecords > 0 ? `${recordsPercentage}% of total` : undefined,
+            }}
+          />
+          <MetricCard
+            icon={<Database size={16} />}
+            label="Attribute Reduction"
+            primary={{
+              value:
+                attributeReduction !== null && attributeReduction !== undefined
+                  ? attributeReduction.toString()
+                  : '—',
+            }}
+          />
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          {averageBeforeKb !== undefined && (
+            <CompactStat label="Avg. Record Size (Before)" value={`${averageBeforeKb.toFixed(2)} KB`} />
+          )}
+          {averageAfterKb !== undefined && (
+            <CompactStat label="Avg. Record Size (After)" value={`${averageAfterKb.toFixed(2)} KB`} />
+          )}
+        </div>
+
         {storageReduction > 0 && (
           <div>
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-text-secondary">Storage Reduction</span>
-              <Chip
-                color="success"
-                variant="flat"
-                startContent={<TrendingDown size={14} />}
-                size="sm"
-              >
+              <span className="text-xs font-medium text-text-secondary uppercase tracking-wide">Storage Impact</span>
+              <Chip size="sm" color="success" variant="flat" startContent={<TrendingDown size={12} />}>
                 -{storageReduction}%
               </Chip>
             </div>
@@ -122,167 +164,95 @@ export function CostImpactPanel({ metrics, isLoading = false }: CostImpactPanelP
               color="success"
               size="sm"
               aria-label="Storage reduction"
-              classNames={{
-                indicator: 'bg-success',
-                track: 'bg-surface-soft/80',
-              }}
+              classNames={{ indicator: 'bg-success', track: 'bg-surface-soft/80' }}
             />
-            {sizeReduction && (
-              <p className="text-xs text-text-secondary/80 mt-1">
-                Saves approximately {sizeReduction}
-              </p>
-            )}
           </div>
         )}
 
-        {/* Monthly Savings */}
-        {formattedSavings && (
-          <div className="p-4 bg-success/10 rounded-xl border border-success/40">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-success">
-                <DollarSign size={18} />
-                <span className="text-sm font-medium text-success">Monthly Savings</span>
-              </div>
-              <span className="text-lg font-bold text-success">
-                {formattedSavings}
-              </span>
-            </div>
-            <p className="text-xs text-success/80 mt-1">
-              Estimated based on current usage patterns
-            </p>
-          </div>
-        )}
-
-        {/* Cost Comparison */}
-        {costBefore !== undefined && costAfter !== undefined && (
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="rounded-xl border border-border/60 bg-background-soft/70 p-3">
-              <p className="text-xs uppercase tracking-wide text-text-secondary/70">Monthly Cost (Before)</p>
-              <p className="text-lg font-semibold text-text-primary mt-1">
-                ${costBefore.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-              </p>
-              {recordsPerHour && (
-                <p className="text-xs text-text-secondary/70 mt-1">
-                  {recordsPerHour.toLocaleString()} records/hour baseline
-                </p>
-              )}
-            </div>
-            <div className="rounded-xl border border-success/50 bg-success/10 p-3">
-              <p className="text-xs uppercase tracking-wide text-success/80">Monthly Cost (After)</p>
-              <p className="text-lg font-semibold text-success mt-1">
-                ${costAfter.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-              </p>
-              {formattedSavings && (
-                <p className="text-xs text-success/70 mt-1">Savings: {formattedSavings}</p>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Average Record Size */}
-        {(averageBeforeKb !== undefined || averageAfterKb !== undefined) && (
-          <div className="grid gap-3 sm:grid-cols-2">
-            {averageBeforeKb !== undefined && (
-              <div className="rounded-xl border border-border/60 bg-background-soft/70 p-3">
-                <p className="text-xs uppercase tracking-wide text-text-secondary/70">Avg. Record Size (Before)</p>
-                <p className="text-lg font-semibold text-text-primary mt-1">
-                  {averageBeforeKb.toFixed(2)} KB
-                </p>
-              </div>
-            )}
-            {averageAfterKb !== undefined && (
-              <div className="rounded-xl border border-secondary/50 bg-secondary/10 p-3">
-                <p className="text-xs uppercase tracking-wide text-text-secondary/70">Avg. Record Size (After)</p>
-                <p className="text-lg font-semibold text-text-primary mt-1">
-                  {averageAfterKb.toFixed(2)} KB
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Records Affected */}
         {totalRecords > 0 && (
           <div>
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-text-secondary">Records Affected</span>
+              <span className="text-xs font-medium text-text-secondary uppercase tracking-wide">Records Affected</span>
               <span className="text-sm font-semibold text-text-primary">
                 {recordsAffected.toLocaleString()} / {totalRecords.toLocaleString()}
               </span>
             </div>
             <Progress
               value={recordsPercentage}
-              color={recordsPercentage > 80 ? 'warning' : 'secondary'}
               size="sm"
               aria-label="Records affected"
-              classNames={{
-                indicator: recordsPercentage > 80 ? 'bg-warning' : 'bg-secondary',
-                track: 'bg-surface-soft/80',
-              }}
+              color={recordsPercentage > 80 ? 'warning' : 'secondary'}
+              classNames={{ indicator: recordsPercentage > 80 ? 'bg-warning' : 'bg-secondary', track: 'bg-surface-soft/80' }}
             />
-            <p className="text-xs text-text-secondary/80 mt-1">
-              {recordsPercentage}% of total records
-            </p>
           </div>
         )}
 
-        {/* Attribute Reduction */}
-        {attributeReduction > 0 && (
-          <div className="p-3 bg-surface-soft/80 rounded-lg border border-border/60 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-text-secondary">Attributes Removed</span>
-                <Chip color="secondary" variant="flat" size="sm" className="border border-secondary/40">
-                  {attributeReduction}
+        {removedAttributes.length > 0 && (
+          <div className="rounded-lg border border-border/60 bg-background-soft/80 p-3">
+            <p className="text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">Removed Attributes</p>
+            <div className="flex flex-wrap gap-2">
+              {removedAttributes.slice(0, 6).map((attribute) => (
+                <Chip key={attribute} size="sm" variant="flat" className="border border-border/60 bg-surface/80 font-mono text-xs">
+                  {attribute}
                 </Chip>
-              </div>
-              <Button
-                size="sm"
-                variant="light"
-                className="bg-background-soft/70 text-text-secondary"
-                endContent={showRemovedAttributes ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                onPress={() => setShowRemovedAttributes((prev) => !prev)}
-              >
-                {showRemovedAttributes ? 'Hide details' : 'View removed attributes'}
-              </Button>
+              ))}
+              {removedAttributes.length > 6 && (
+                <Chip size="sm" variant="flat" className="border border-border/60 bg-surface/80">
+                  +{removedAttributes.length - 6} more
+                </Chip>
+              )}
             </div>
-            {showRemovedAttributes && (
-              <div className="rounded-lg border border-border/50 bg-surface/90">
-                {removedAttributes.length > 0 ? (
-                  <ul className="divide-y divide-border/60 text-xs text-text-secondary">
-                    {removedAttributes.map((attribute) => (
-                      <li key={attribute} className="px-3 py-2 font-mono text-text-primary/90">
-                        {attribute}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="px-3 py-2 text-xs text-text-secondary/80">
-                    Specific attributes will appear here once impact analysis is connected to live telemetry.
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Loading State */}
-        {isLoading && (
-          <div className="text-center py-4">
-            <Progress
-              size="sm"
-              isIndeterminate
-              aria-label="Calculating impact..."
-              className="max-w-md mx-auto"
-              classNames={{
-                indicator: 'bg-primary',
-                track: 'bg-surface-soft/80',
-              }}
-            />
-            <p className="text-xs text-text-secondary/80 mt-2">Calculating impact...</p>
           </div>
         )}
       </CardBody>
     </Card>
+  );
+}
+
+interface MetricCardProps {
+  icon: React.ReactNode;
+  label: string;
+  primary: {
+    value: string;
+    hint?: string;
+  };
+  secondary?: {
+    label: string;
+    value: string;
+  };
+}
+
+function MetricCard({ icon, label, primary, secondary }: MetricCardProps) {
+  return (
+    <div className="rounded-xl border border-border/60 bg-background-soft/80 p-3 flex flex-col gap-2">
+      <div className="flex items-center gap-2 text-text-secondary text-xs uppercase tracking-wide">
+        <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-background-soft/90 border border-border/60 text-text-secondary">
+          {icon}
+        </span>
+        {label}
+      </div>
+      <span className="text-lg font-semibold text-text-primary">{primary.value}</span>
+      {primary.hint && <span className="text-xs text-text-secondary/80">{primary.hint}</span>}
+      {secondary && (
+        <div className="text-xs text-text-secondary/80">
+          <span className="font-medium text-text-secondary/70">{secondary.label}: </span>
+          {secondary.value}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface CompactStatProps {
+  label: string;
+  value: string;
+}
+
+function CompactStat({ label, value }: CompactStatProps) {
+  return (
+    <div className="rounded-lg border border-border/60 bg-background-soft/70 p-3">
+      <p className="text-xs uppercase tracking-wide text-text-secondary/70">{label}</p>
+      <p className="text-lg font-semibold text-text-primary mt-1">{value}</p>
+    </div>
   );
 }

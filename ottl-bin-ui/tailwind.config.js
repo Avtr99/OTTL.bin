@@ -11,24 +11,24 @@ export default {
     extend: {
       colors: {
         // Custom colors for transformation categories
-        'parsing-purple': '#a855f7',
-        'cost-orange': '#f97316',
-        'metric-gray': '#9aa2b4',
+        'parsing-purple': '#c084fc',
+        'cost-orange': '#fb923c',
+        'metric-gray': '#a1a1aa',
 
-        // Dark neutrals inspired by observability consoles
-        background: '#12121b',
-        'background-soft': '#171823',
-        surface: '#1b1f2b',
-        'surface-soft': '#202536',
-        border: '#2b3142',
-        'border-strong': '#3a4157',
-        'text-primary': '#f3f4f6',
-        'text-secondary': '#9ca3b5',
-        'primary-foreground': '#f5f3ff',
-        'secondary-foreground': '#fff7ed',
-        'success-foreground': '#012216',
-        'warning-foreground': '#251600',
-        'danger-foreground': '#1f0003'
+        // High-contrast dark theme with warmer tones
+        background: '#0a0a0f',
+        'background-soft': '#111118',
+        surface: '#18181f',
+        'surface-soft': '#1f1f28',
+        border: '#2d2d3a',
+        'border-strong': '#3f3f4f',
+        'text-primary': '#fafafa',
+        'text-secondary': '#a1a1aa',
+        'primary-foreground': '#fafafa',
+        'secondary-foreground': '#fafafa',
+        'success-foreground': '#fafafa',
+        'warning-foreground': '#18181b',
+        'danger-foreground': '#fafafa'
       },
       fontFamily: {
         sans: ['Inter', 'sans-serif'],
@@ -65,31 +65,31 @@ export default {
           hoverEffect: 'opacity'
         },
         colors: {
-          background: '#12121b',
-          foreground: '#f3f4f6',
-          focus: '#a855f7',
+          background: '#0a0a0f',
+          foreground: '#fafafa',
+          focus: '#8b5cf6',
           primary: {
-            DEFAULT: '#7c6cff',
-            foreground: '#f5f3ff'
+            DEFAULT: '#8b5cf6',
+            foreground: '#fafafa'
           },
           secondary: {
-            DEFAULT: '#f97316',
-            foreground: '#fff7ed'
+            DEFAULT: '#06b6d4',
+            foreground: '#fafafa'
           },
           success: {
-            DEFAULT: '#10b981',
-            foreground: '#012216'
+            DEFAULT: '#22c55e',
+            foreground: '#fafafa'
           },
           warning: {
-            DEFAULT: '#fbbf24',
-            foreground: '#251600'
+            DEFAULT: '#f59e0b',
+            foreground: '#18181b'
           },
           danger: {
             DEFAULT: '#ef4444',
-            foreground: '#1f0003'
+            foreground: '#fafafa'
           },
-          divider: '#272d3d',
-          border: '#2b3142'
+          divider: '#27272a',
+          border: '#2d2d3a'
         }
       }
     }

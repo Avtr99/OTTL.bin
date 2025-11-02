@@ -22,14 +22,55 @@ import {
   Chip,
   Select,
   SelectItem,
+  Modal,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
 } from '@heroui/react';
 import type { Selection } from '@heroui/react';
-import { Plus, Upload, PencilLine, FileDown, EyeOff, Trash2, Fingerprint } from 'lucide-react';
+import {
+  Plus,
+  Upload,
+  PencilLine,
+  FileDown,
+  EyeOff,
+  Trash2,
+  Fingerprint,
+  Maximize2,
+  X,
+} from 'lucide-react';
 import { toast } from 'sonner';
+import { parseTelemetryJSON } from './utils/otlpParser';
+import { autoDetectTransformations, getDetectionSummary } from './utils/autoDetectTransformations';
 
 type TelemetryRecord = Record<string, unknown>;
 
 const makeTransformationId = (prefix: string) => `${prefix}-${Date.now()}`;
+
+/**
+ * Infer operation type from transformation title (fallback when explicit operation is not provided)
+ */
+const inferOperationFromTitle = (title: string): string | undefined => {
+  if (title.includes('Sample Health Check')) {
+    return 'sample';
+  }
+  if (title.includes('Limit Attribute Count')) {
+    return 'limit';
+  }
+  if (title.includes('Mask') || title.includes('Token')) {
+    return 'mask';
+  }
+  if (title.includes('Hash')) {
+    return 'hash';
+  }
+  if (title.includes('Drop') || title.includes('Delete')) {
+    return 'drop';
+  }
+  if (title.includes('Truncate')) {
+    return 'truncate';
+  }
+  return undefined;
+};
 
 const advancedTemplates: TransformationTemplate[] = [
   {
@@ -172,23 +213,6 @@ const buildLogStatement = (transformation: Transformation): BuiltStatement => {
   }
 };
 
-const buildStatement = (transformation: Transformation): StatementDetails => {
-  const signal = transformation.signal ?? 'trace';
-
-  if (signal === 'metric') {
-    const built = buildMetricStatement(transformation);
-    return { ...built, signal, transformation };
-  }
-
-  if (signal === 'log') {
-    const built = buildLogStatement(transformation);
-    return { ...built, signal, transformation };
-  }
-
-  const built = buildTraceStatement(transformation);
-  return { ...built, signal: 'trace', transformation };
-};
-
 const maskCommandLineSecrets = (value: unknown): unknown => {
   if (typeof value !== 'string') return value;
   return value.replace(/password=([^\s]+)/gi, 'password=********');
@@ -213,18 +237,103 @@ const applyTransformations = (
   transformations
     .filter((transformation) => transformation.isEnabled !== false)
     .forEach((transformation) => {
+      // Handle auto-detected transformations
+      if (transformation.config?.autoDetected && transformation.config?.fields) {
+        const rawFields = transformation.config.fields;
+        if (!Array.isArray(rawFields) || !rawFields.every(field => typeof field === 'string')) {
+          console.warn('Invalid fields configuration for auto-detected transformation:', transformation.title, rawFields);
+          return; // skip this transformation
+        }
+        const fields = rawFields as string[];
+        
+        // Determine operation: prefer explicit config.operation, fallback to title parsing
+        const operation = transformation.config.operation as string | undefined;
+        const inferredOperation = operation || inferOperationFromTitle(transformation.title);
+        
+        // Handle special operations first (sample, limit)
+        switch (inferredOperation) {
+          case 'sample':
+            // Mark for sampling (in real OTTL, this would use probabilistic sampling)
+            cloned['_sampled'] = 'health-check-sampled';
+            return;
+          
+          case 'limit':
+            // Keep only the most important attributes (simplified for preview)
+            const importantKeys = ['trace.id', 'span.id', 'span.name', 'resource.service.name'];
+            Object.keys(cloned).forEach((key) => {
+              if (!importantKeys.includes(key) && !key.startsWith('span.attributes.http')) {
+                delete cloned[key];
+              }
+            });
+            return;
+        }
+        
+        // Handle field-based operations
+        fields.forEach((field) => {
+          if (!(field in cloned)) {
+            return; // skip if field not present
+          }
+          
+          switch (inferredOperation) {
+            case 'mask':
+              cloned[field] = '********';
+              break;
+            
+            case 'hash':
+              // Only hash if value is present (not null/undefined)
+              if (cloned[field] != null) {
+                cloned[field] = hashEmail(cloned[field]);
+              }
+              break;
+            
+            case 'drop':
+              delete cloned[field];
+              break;
+            
+            case 'truncate':
+              // Only truncate strings
+              if (typeof cloned[field] === 'string') {
+                cloned[field] = (cloned[field] as string).substring(0, 100) + '...';
+              }
+              break;
+            
+            default:
+              // Unknown operation, skip
+              console.warn('Unknown operation for auto-detected transformation:', inferredOperation, transformation.title);
+          }
+        });
+        return;
+      }
+      
+      // Handle legacy manual transformations
       switch (transformation.title) {
         case 'Mask Passwords': {
+          // Handle both legacy and OTLP formats
           if (typeof cloned['process.command_line'] === 'string') {
             cloned['process.command_line'] = maskCommandLineSecrets(
               cloned['process.command_line'],
             );
           }
+          // Mask auth tokens in OTLP resource attributes
+          if (typeof cloned['resource.dash0.auth.token'] === 'string') {
+            cloned['resource.dash0.auth.token'] = '********';
+          }
           break;
         }
         case 'Hash Email Addresses': {
+          // Handle both legacy and OTLP formats
           if (typeof cloned['user.email'] === 'string') {
             cloned['user.email'] = hashEmail(cloned['user.email']);
+          }
+          // Hash GUIDs and UUIDs in OTLP
+          if (typeof cloned['span.attributes.guid:x-request-id'] === 'string') {
+            cloned['span.attributes.guid:x-request-id'] = hashEmail(cloned['span.attributes.guid:x-request-id']);
+          }
+          if (typeof cloned['resource.k8s.pod.uid'] === 'string') {
+            cloned['resource.k8s.pod.uid'] = hashEmail(cloned['resource.k8s.pod.uid']);
+          }
+          if (typeof cloned['resource.k8s.deployment.uid'] === 'string') {
+            cloned['resource.k8s.deployment.uid'] = hashEmail(cloned['resource.k8s.deployment.uid']);
           }
           break;
         }
@@ -242,6 +351,13 @@ const parseTelemetryText = (text: string): TelemetryRecord[] => {
     return [];
   }
 
+  // Try OTLP JSON parser first
+  const otlpRecords = parseTelemetryJSON(trimmed);
+  if (otlpRecords.length > 0) {
+    return otlpRecords;
+  }
+
+  // Fallback to JSONL and key=value parsing
   try {
     const data = JSON.parse(trimmed);
     if (Array.isArray(data)) {
@@ -342,6 +458,8 @@ function App() {
   const [rawOttl, setRawOttl] = useState('');
   const [hasCustomRawOttl, setHasCustomRawOttl] = useState(false);
   const [isRawEditorOpen, setIsRawEditorOpen] = useState(false);
+  const [isTransformationsModalOpen, setIsTransformationsModalOpen] = useState(false);
+  const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
 
   const telemetrySources = useMemo(
     () => [
@@ -456,7 +574,6 @@ function App() {
       attributeReduction,
       sizeReduction,
       removedAttributes,
-      recordsPerHour,
       activeSamples,
       suggestionInsights,
       name,
@@ -474,7 +591,6 @@ function App() {
       averageRecordSizeAfter: avgRecordSizeAfter,
       recordsAffected: Math.round(activeSamples * (storageReduction / 100)),
       totalRecords: activeSamples,
-      recordsPerHour,
       sourceName: name,
     });
 
@@ -683,23 +799,6 @@ function App() {
     }
   };
 
-  const buildStatement = (transformation: Transformation): StatementDetails => {
-    const signal = transformation.signal ?? 'trace';
-
-    if (signal === 'metric') {
-      const built = buildMetricStatement(transformation);
-      return { ...built, signal, transformation };
-    }
-
-    if (signal === 'log') {
-      const built = buildLogStatement(transformation);
-      return { ...built, signal, transformation };
-    }
-
-    const built = buildTraceStatement(transformation);
-    return { ...built, signal: 'trace', transformation };
-  };
-
   const generateDefaultOttl = useCallback((): string => {
     const enabledTransformations = transformations.filter((transformation) => transformation.isEnabled !== false);
 
@@ -718,7 +817,16 @@ function App() {
     }
 
     const statementGroups = enabledTransformations
-      .map(buildStatement)
+      .map((transformation) => {
+        const signal = transformation.signal ?? 'trace';
+        const built =
+          signal === 'metric'
+            ? buildMetricStatement(transformation)
+            : signal === 'log'
+              ? buildLogStatement(transformation)
+              : buildTraceStatement(transformation);
+        return { ...built, signal, transformation } as StatementDetails;
+      })
       .reduce<Record<TransformationSignal, Partial<Record<StatementContext, StatementDetails[]>>>>(
         (acc, detail) => {
           const { signal, context } = detail;
@@ -771,7 +879,33 @@ function App() {
     });
 
     return lines.join('\n');
-  }, [selectedTelemetrySource, transformations, buildStatement]);
+  }, [selectedTelemetrySource, transformations]);
+
+const canonicalStringify = (value: unknown): string => {
+  const seen = new WeakSet();
+
+  const sortValue = (input: unknown): unknown => {
+    if (input === null || typeof input !== 'object') {
+      return input;
+    }
+
+    if (seen.has(input as object)) {
+      return null;
+    }
+    seen.add(input as object);
+
+    if (Array.isArray(input)) {
+      return input.map(sortValue);
+    }
+
+    const entries = Object.entries(input as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, val]) => [key, sortValue(val)] as const);
+    return Object.fromEntries(entries);
+  };
+
+  return JSON.stringify(sortValue(value));
+};
 
   useEffect(() => {
     if (!hasCustomRawOttl) {
@@ -889,7 +1023,49 @@ function App() {
         setSamples(parsed);
         setCurrentSampleIndex(0);
         setSampleError(null);
-        toast.success(`Loaded ${parsed.length} sample records`, { id: toastId });
+        
+        // Auto-detect transformations
+        const detected = autoDetectTransformations(parsed);
+        const summary = getDetectionSummary(parsed);
+        
+        if (detected.length > 0) {
+          // Deduplicate against existing transformations
+          const existingKeys = new Set(
+            transformations.map((t) => `${t.title}:${canonicalStringify(t.config)}`)
+          );
+          
+          // Filter detected to only new ones, skipping duplicates within detected
+          const detectedKeys = new Set<string>();
+          const filteredDetected = detected.filter((t) => {
+            const key = `${t.title}:${canonicalStringify(t.config)}`;
+            if (existingKeys.has(key) || detectedKeys.has(key)) {
+              return false;
+            }
+            detectedKeys.add(key);
+            return true;
+          });
+          
+          if (filteredDetected.length > 0) {
+            // Add filtered detected transformations to the pipeline
+            setTransformations((prev) => [...prev, ...filteredDetected]);
+            toast.success(
+              `Loaded ${parsed.length} records. Added ${filteredDetected.length} new recommended transformations!`,
+              { id: toastId, duration: 5000 }
+            );
+            
+            // Show summary of what was detected
+            setTimeout(() => {
+              toast.info(
+                `Found: ${summary.topIssues.map((i) => `${i.name} (${i.count} fields)`).join(', ')}`,
+                { duration: 6000 }
+              );
+            }, 1000);
+          } else {
+            toast.success(`Loaded ${parsed.length} sample records (no new transformations detected)`, { id: toastId });
+          }
+        } else {
+          toast.success(`Loaded ${parsed.length} sample records`, { id: toastId });
+        }
       } catch (error) {
         toast.error('Failed to parse sample data. Ensure valid JSON or JSONL format.', { id: toastId });
         setSampleError('Dash0 could not parse this file. Confirm the export is valid JSON, JSONL, or plain key=value pairs.');
@@ -1100,22 +1276,38 @@ function App() {
         </Card>
 
         {/* Main Content Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-7 xl:grid-cols-12 gap-6 text-text-primary">
+        <div className="grid grid-cols-1 lg:grid-cols-7 xl:grid-cols-12 gap-6 text-text-primary items-stretch">
           {/* Transformations Column */}
-          <div className="lg:col-span-4 xl:col-span-5 space-y-6">
-            <Card shadow="md" radius="lg" className="bg-surface/95 border border-border/60">
-              <CardHeader className="flex justify-between items-center px-4 py-3">
+          <div className="lg:col-span-4 xl:col-span-5 flex">
+            <Card
+              shadow="md"
+              radius="lg"
+              className="bg-surface/95 border border-border/60 flex flex-col h-full min-h-[640px] max-h-[calc(100vh-16rem)]"
+            >
+              <CardHeader className="flex justify-between items-center px-4 py-3 flex-shrink-0 gap-3">
                 <h3 className="text-lg font-semibold text-text-primary">Transformations</h3>
-                <Button
-                  size="sm"
-                  color="primary"
-                  startContent={<Plus size={16} />}
-                  onPress={() => setIsAddModalOpen(true)}
-                >
-                  Add Transformation
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="light"
+                    className="text-text-secondary hover:text-text-primary"
+                    onPress={() => setIsTransformationsModalOpen(true)}
+                    aria-label="Expand transformations"
+                  >
+                    <Maximize2 size={16} />
+                  </Button>
+                  <Button
+                    size="sm"
+                    color="primary"
+                    startContent={<Plus size={16} />}
+                    onPress={() => setIsAddModalOpen(true)}
+                  >
+                    Add Transformation
+                  </Button>
+                </div>
               </CardHeader>
-              <CardBody className="px-4 py-4">
+              <CardBody className="px-4 pt-4 pb-6 overflow-y-auto flex-1">
                 <TransformationList
                   transformations={transformations}
                   onReorder={handleReorder}
@@ -1128,7 +1320,7 @@ function App() {
           </div>
 
           {/* Right Column - Preview & Impact */}
-          <div className="lg:col-span-3 xl:col-span-7" ref={previewSectionRef}>
+          <div className="lg:col-span-3 xl:col-span-7 flex" ref={previewSectionRef}>
             <LivePreviewPanel
               currentStep={Math.min(transformations.length, transformations.length)}
               totalSteps={transformations.length}
@@ -1146,6 +1338,7 @@ function App() {
               onQuickAction={handlePreviewQuickAction}
               isLoading={isProcessingSample}
               errorMessage={sampleError ?? undefined}
+              onExpandRequest={() => setIsPreviewModalOpen(true)}
             />
           </div>
         </div>
@@ -1155,6 +1348,110 @@ function App() {
           <CostImpactPanel metrics={impactMetrics} />
         </div>
       </div>
+
+      {/* Transformations Expanded Modal */}
+      <Modal
+        isOpen={isTransformationsModalOpen}
+        onClose={() => setIsTransformationsModalOpen(false)}
+        size="5xl"
+        scrollBehavior="inside"
+        hideCloseButton
+        classNames={{ base: 'max-h-[90vh] max-w-[1220px] w-[96vw]', closeButton: 'hidden' }}
+      >
+        <ModalContent className="bg-surface/95 border border-border/60 text-text-primary">
+          <ModalHeader className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-semibold">Transformations</h2>
+              <p className="text-sm text-text-secondary">Expanded view for detailed editing</p>
+            </div>
+            <Button
+              isIconOnly
+              variant="light"
+              className="text-text-secondary hover:text-text-primary"
+              onPress={() => setIsTransformationsModalOpen(false)}
+              aria-label="Close transformations modal"
+            >
+              <X size={18} />
+            </Button>
+          </ModalHeader>
+          <ModalBody className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-text-secondary text-sm">
+                <Chip size="sm" variant="flat" className="border border-border/60 bg-background-soft/70 text-xs">
+                  {transformations.length} transformations
+                </Chip>
+              </div>
+              <Button
+                size="sm"
+                color="primary"
+                startContent={<Plus size={16} />}
+                onPress={() => {
+                  setIsAddModalOpen(true);
+                  setIsTransformationsModalOpen(false);
+                }}
+              >
+                Add Transformation
+              </Button>
+            </div>
+            <TransformationList
+              transformations={transformations}
+              onReorder={handleReorder}
+              onToggle={handleToggle}
+              onEdit={handleEdit}
+              onDelete={handleDelete}
+            />
+          </ModalBody>
+        </ModalContent>
+      </Modal>
+
+      {/* Live Preview Expanded Modal */}
+      <Modal
+        isOpen={isPreviewModalOpen}
+        onClose={() => setIsPreviewModalOpen(false)}
+        size="5xl"
+        scrollBehavior="inside"
+        hideCloseButton
+        classNames={{ base: 'max-h-[95vh] max-w-[1280px] w-[97vw]', closeButton: 'hidden' }}
+      >
+        <ModalContent className="bg-surface/95 border border-border/60 text-text-primary">
+          <ModalHeader className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-semibold">Live Preview</h2>
+              <p className="text-sm text-text-secondary">Full-screen before/after comparison</p>
+            </div>
+            <Button
+              isIconOnly
+              variant="light"
+              className="text-text-secondary hover:text-text-primary"
+              onPress={() => setIsPreviewModalOpen(false)}
+              aria-label="Close live preview modal"
+            >
+              <X size={18} />
+            </Button>
+          </ModalHeader>
+          <ModalBody>
+            <LivePreviewPanel
+              currentStep={Math.min(transformations.length, transformations.length)}
+              totalSteps={transformations.length}
+              currentSample={currentSampleIndex + 1}
+              totalSamples={totalSamples}
+              before={activeSample}
+              after={transformedSample}
+              onSampleChange={(sample) => {
+                const nextIndex = Math.min(Math.max(sample - 1, 0), totalSamples - 1);
+                setCurrentSampleIndex(nextIndex);
+              }}
+              onReplayAll={() => toast('Replaying the pipeline over uploaded samples...')}
+              onFieldAction={(field) => toast.info(`Selected ${field} for quick actions.`)}
+              availableActions={previewQuickActions}
+              onQuickAction={handlePreviewQuickAction}
+              isLoading={isProcessingSample}
+              errorMessage={sampleError ?? undefined}
+              variant="modal"
+            />
+          </ModalBody>
+        </ModalContent>
+      </Modal>
 
       {/* Bottom Action Bar */}
       <div className="fixed bottom-0 left-0 right-0 bg-surface/95/98 backdrop-blur border-t border-border/70 shadow-2xl/40 z-50">
