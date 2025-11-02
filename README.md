@@ -3,7 +3,6 @@
 
 **OTTL.bin is a visual, form-based interface that makes the OpenTelemetry Transformation Language (OTTL) accessible to everyone.**
 
-![OTTL.bin Hero Image](https://via.placeholder.com/1200x600.png?text=OTTL.bin+UI+Screenshot)
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/git-user/OTTL.bin)
 [![License](https://img.shields.io/badge/license-MIT-blue)](https://opensource.org/licenses/MIT)
@@ -26,14 +25,6 @@ Whether you're a seasoned SRE, a security-conscious engineer, or a cost-savvy op
 - **Template Library**: Get started quickly with pre-built templates for common use cases like PII masking, cost optimization, and data normalization.
 - **Raw OTTL Escape Hatch**: Drop into a raw OTTL editor at any time for advanced use cases and maximum flexibility.
 - **Drag-and-Drop Reordering**: Easily reorder transformations in your pipeline to get the logic just right.
-
-## Live Demo
-
-Experience the power of OTTL.bin for yourself in our live demo:
-
-[**Launch Live Demo**](http://localhost:5173)
-
-*(Note: The live demo is running locally on your machine.)*
 
 ## Getting Started
 
@@ -72,12 +63,8 @@ The application will be available at `http://localhost:5173`.
 - **Drag & Drop**: @dnd-kit
 - **Code Editor**: Monaco Editor
 
-## Documentation
-
-For more detailed information about the project, please see our comprehensive documentation:
-
-- [**Consolidated UX & Design Specification**](docs/CONSOLIDATED_UX_DESIGN.md)
-- [**Product Specification**](docs/PRODUCT_SPEC.md)
+## Usage
+You can directly use OTTL.bin by uploading your telemetry data or use the templates to build your transformations.
 
 ## License
 
