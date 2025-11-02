@@ -76,7 +76,6 @@ The application will be available at `http://localhost:5173`.
 
 For more detailed information about the project, please see our comprehensive documentation:
 
-- [**Master Documentation Index**](documentation.md)
 - [**Consolidated UX & Design Specification**](docs/CONSOLIDATED_UX_DESIGN.md)
 - [**Product Specification**](docs/PRODUCT_SPEC.md)
 
