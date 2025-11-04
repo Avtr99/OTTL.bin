@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import {
   Navbar,
   NavbarBrand,
@@ -10,13 +11,25 @@ import {
   DropdownItem,
   Avatar,
 } from '@heroui/react';
-import { FolderOutput, Layout } from 'lucide-react';
+import { FolderOutput, Layout, Network } from 'lucide-react';
 
 interface HeaderBarProps {
   onTemplateClick?: () => void;
   onWorkspaceExport?: () => void;
   userName?: string;
   userAvatar?: string;
+  connections?: ConnectionGroup[];
+  onConnectMicroservice?: (serviceId: string) => void;
+}
+
+export interface ConnectionGroup {
+  team: string;
+  microservices: {
+    id: string;
+    name: string;
+    environment: string;
+    summary?: string;
+  }[];
 }
 
 /**
@@ -28,6 +41,8 @@ export function HeaderBar({
   onWorkspaceExport,
   userName = 'User',
   userAvatar,
+  connections,
+  onConnectMicroservice,
 }: HeaderBarProps) {
   return (
     <Navbar
@@ -48,6 +63,68 @@ export function HeaderBar({
       </NavbarBrand>
 
       <NavbarContent justify="end" className="gap-3 text-sm">
+        <NavbarItem>
+          <Dropdown placement="bottom-end">
+            <DropdownTrigger>
+              <Button
+                variant="bordered"
+                startContent={<Network size={18} />}
+                className="border border-primary/40 bg-primary/15 text-text-primary"
+              >
+                Connect
+              </Button>
+            </DropdownTrigger>
+            <DropdownMenu
+              aria-label="Connect to a microservice"
+              className="bg-surface-soft/95 text-text-primary border border-border/60 min-w-[260px]"
+              selectionMode="single"
+              onAction={(key) => {
+                const value = key.toString();
+                if (value.startsWith('service:')) {
+                  onConnectMicroservice?.(value.replace('service:', ''));
+                }
+              }}
+            >
+              {connections && connections.length > 0 ? (
+                connections.map((group, index) => (
+                  <Fragment key={group.team}>
+                    <DropdownItem
+                      key={`header:${group.team}`}
+                      isReadOnly
+                      className="pointer-events-none text-[11px] uppercase tracking-wide text-text-secondary/70"
+                    >
+                      {group.team}
+                    </DropdownItem>
+                    {group.microservices.map((service) => (
+                      <DropdownItem
+                        key={`service:${service.id}`}
+                        className="py-3"
+                        description={
+                          [service.environment, service.summary]
+                            .filter(Boolean)
+                            .join(' • ')
+                        }
+                      >
+                        {service.name}
+                      </DropdownItem>
+                    ))}
+                    {index < connections.length - 1 && (
+                      <DropdownItem
+                        key={`divider:${group.team}`}
+                        isReadOnly
+                        className="pointer-events-none h-px my-1 bg-border/60"
+                      />
+                    )}
+                  </Fragment>
+                ))
+              ) : (
+                <DropdownItem key="placeholder" isReadOnly className="pointer-events-none text-text-secondary">
+                  No microservices configured yet
+                </DropdownItem>
+              )}
+            </DropdownMenu>
+          </Dropdown>
+        </NavbarItem>
         <NavbarItem>
           <Button
             color="primary"
