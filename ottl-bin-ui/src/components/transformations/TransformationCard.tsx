@@ -27,26 +27,28 @@ export interface TransformationCardProps {
   compatibleSignals?: string[];
 }
 
+// Simplified color scheme - muted and consistent
 const categoryCheckboxColors = {
-  attribute: 'success',
-  parsing: 'secondary',
-  privacy: 'warning',
-  filtering: 'warning',
-  deletion: 'danger',
+  attribute: 'default',
+  parsing: 'default',
+  privacy: 'default',
+  filtering: 'default',
+  deletion: 'danger', // Only destructive actions get color
   metric: 'default',
-  formatting: 'secondary',
-  advanced: 'primary',
+  formatting: 'default',
+  advanced: 'default',
 } as const;
 
+// Muted chip styles - subtle differentiation without visual noise
 const categoryChipStyles: Record<TransformationCardProps['category'], string> = {
-  attribute: 'bg-success/80 text-success-foreground border border-success/70 shadow-sm',
-  parsing: 'bg-secondary/80 text-secondary-foreground border border-secondary/70 shadow-sm',
-  privacy: 'bg-warning/85 text-black border border-warning/70 shadow-sm',
-  filtering: 'bg-primary/80 text-primary-foreground border border-primary/70 shadow-sm',
-  deletion: 'bg-danger/80 text-danger-foreground border border-danger/70 shadow-sm',
-  metric: 'bg-background-soft/90 text-text-primary border border-border/70 shadow-sm',
-  formatting: 'bg-secondary/70 text-secondary-foreground border border-secondary/60 shadow-sm',
-  advanced: 'bg-primary/90 text-primary-foreground border border-primary/80 shadow-sm',
+  attribute: 'bg-slate-700/50 text-slate-200 border border-slate-600/50',
+  parsing: 'bg-slate-700/50 text-slate-200 border border-slate-600/50',
+  privacy: 'bg-slate-700/50 text-slate-200 border border-slate-600/50',
+  filtering: 'bg-slate-700/50 text-slate-200 border border-slate-600/50',
+  deletion: 'bg-danger/20 text-danger border border-danger/30',
+  metric: 'bg-slate-700/50 text-slate-200 border border-slate-600/50',
+  formatting: 'bg-slate-700/50 text-slate-200 border border-slate-600/50',
+  advanced: 'bg-slate-700/50 text-slate-200 border border-slate-600/50',
 };
 
 const SIGNAL_ICONS: Record<string, React.ReactNode> = {
@@ -55,10 +57,11 @@ const SIGNAL_ICONS: Record<string, React.ReactNode> = {
   log: <FileText size={12} />,
 };
 
-const SIGNAL_COLORS: Record<string, 'primary' | 'success' | 'warning'> = {
-  trace: 'primary',
-  metric: 'success',
-  log: 'warning',
+// Muted signal colors - all use default styling
+const SIGNAL_COLORS: Record<string, 'primary' | 'success' | 'warning' | 'default'> = {
+  trace: 'default',
+  metric: 'default',
+  log: 'default',
 };
 
 /**

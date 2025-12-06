@@ -348,6 +348,56 @@ const detectionRules: DetectionRule[] = [
       return { matched, fields: [...new Set(fields)] };
     },
   },
+
+  // Resource attributes (often contain metadata that can be cleaned up)
+  {
+    id: 'clean-resource-attrs',
+    name: 'Clean Resource Attributes',
+    description: 'Detected resource attributes that may contain unnecessary metadata',
+    category: 'deletion',
+    signal: 'trace',
+    compatibleSignals: ['trace', 'log'],
+    priority: 35,
+    detect: (records) => {
+      const fields: string[] = [];
+      
+      for (const record of records) {
+        for (const key in record) {
+          if (key.startsWith('resource.') && key !== 'resource.service.name') {
+            fields.push(key);
+          }
+        }
+        if (fields.length > 0) break;
+      }
+      
+      return { matched: fields.length > 0, fields: [...new Set(fields)].slice(0, 5) };
+    },
+  },
+
+  // Span attributes (general detection for any span attributes)
+  {
+    id: 'review-span-attrs',
+    name: 'Review Span Attributes',
+    description: 'Detected span attributes - review for sensitive data or optimization',
+    category: 'attribute',
+    signal: 'trace',
+    compatibleSignals: ['trace'],
+    priority: 30,
+    detect: (records) => {
+      const fields: string[] = [];
+      
+      for (const record of records) {
+        for (const key in record) {
+          if (key.startsWith('span.attributes.')) {
+            fields.push(key.replace('span.attributes.', ''));
+          }
+        }
+        if (fields.length > 0) break;
+      }
+      
+      return { matched: fields.length > 0, fields: [...new Set(fields)].slice(0, 5) };
+    },
+  },
 ];
 
 /**
@@ -370,7 +420,7 @@ export function autoDetectTransformations(records: TelemetryRecord[]): Transform
         title: rule.name,
         description: `${rule.description} (Fields: ${fields.slice(0, 3).join(', ')}${fields.length > 3 ? '...' : ''})`,
         category: rule.category,
-        isEnabled: false, // Start disabled, let user enable
+        isEnabled: true, // Enable by default so OTTL is generated
         signal: rule.signal,
         compatibleSignals: rule.compatibleSignals,
         config: {

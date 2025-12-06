@@ -42,353 +42,138 @@ interface AddTransformationModalProps {
   transformationTypes?: TransformationType[];
 }
 
+// Simplified transformation list - plain language, common use cases first
 export const defaultTransformations: TransformationType[] = [
-  // Attribute Operations
-  {
-    id: 'add-static-attribute',
-    name: 'Add Static Attribute',
-    description: 'Add a new key/value pair to the payload.',
-    category: 'attribute',
-  },
-  {
-    id: 'derive-from-substring',
-    name: 'Derive from Substring',
-    description: 'Extract characters by index range from an attribute.',
-    category: 'attribute',
-  },
-  {
-    id: 'concatenate-multiple',
-    name: 'Concatenate Multiple',
-    description: 'Join attributes together with separators.',
-    category: 'attribute',
-  },
-  {
-    id: 'split-and-extract',
-    name: 'Split & Extract',
-    description: 'Split values by delimiter and pull specific parts.',
-    category: 'attribute',
-  },
-  {
-    id: 'case-conversion',
-    name: 'Case Conversion',
-    description: 'Convert attribute values to snake_case, camelCase, etc.',
-    category: 'attribute',
-  },
-  {
-    id: 'copy-between-scopes',
-    name: 'Copy Between Scopes',
-    description: 'Move attributes across resource, span, log, or datapoint scopes.',
-    category: 'attribute',
-  },
-
-  // Parsing & Extraction
-  {
-    id: 'parse-json-body',
-    name: 'Parse JSON Body',
-    description: 'Extract structured data from JSON payloads.',
-    category: 'parsing',
-  },
-  {
-    id: 'parse-xml',
-    name: 'Parse XML',
-    description: 'Use XPath-style selectors to read XML content.',
-    category: 'parsing',
-  },
-  {
-    id: 'extract-regex-pattern',
-    name: 'Extract Regex Patterns',
-    description: 'Capture named groups from regex matches.',
-    category: 'parsing',
-  },
-  {
-    id: 'parse-user-agent',
-    name: 'Parse User Agent',
-    description: 'Break user agent strings into browser, OS, and device fields.',
-    category: 'parsing',
-  },
-
-  // Privacy & Masking
-  {
-    id: 'mask-with-pattern',
-    name: 'Mask with Pattern',
-    description: 'Use regex replacements to redact secrets.',
-    category: 'privacy',
-  },
-  {
-    id: 'hash-attributes',
-    name: 'Hash Attributes',
-    description: 'Hash values using SHA256, Murmur3, or MD5.',
-    category: 'privacy',
-  },
+  // Most Common - Privacy & Security (what users typically need first)
   {
     id: 'mask-sensitive-data',
-    name: 'Mask Sensitive Data',
-    description: 'Replace sensitive values like passwords or tokens with asterisks.',
+    name: 'Mask Passwords & Secrets',
+    description: 'Replace sensitive values with asterisks (e.g., password=***)',
     category: 'privacy',
     compatibleSignals: ['trace', 'log'],
   },
   {
     id: 'hash-pii',
-    name: 'Hash PII',
-    description: 'Hash personally identifiable information using SHA-256.',
+    name: 'Hash Email & PII',
+    description: 'One-way hash for emails, user IDs, etc. (keeps analytics, hides data)',
     category: 'privacy',
     compatibleSignals: ['trace', 'metric', 'log'],
   },
-  {
-    id: 'redact-with-wildcards',
-    name: 'Redact with Wildcards',
-    description: 'Normalize IDs and URLs using wildcard masks.',
-    category: 'privacy',
-  },
-  {
-    id: 'partial-masking',
-    name: 'Partial Masking',
-    description: 'Reveal only the first/last characters of sensitive strings.',
-    category: 'privacy',
-  },
 
-  // Filtering & Cost Control
-  {
-    id: 'drop-by-condition',
-    name: 'Drop by Condition',
-    description: 'Filter records using query builder rules.',
-    category: 'filtering',
-  },
-  {
-    id: 'sample-telemetry',
-    name: 'Sample Telemetry',
-    description: 'Reduce volume with smart or deterministic sampling.',
-    category: 'filtering',
-  },
-  {
-    id: 'limit-attribute-count',
-    name: 'Limit Attribute Count',
-    description: 'Keep the most important attributes and drop the rest.',
-    category: 'filtering',
-  },
-  {
-    id: 'truncate-values',
-    name: 'Truncate Values',
-    description: 'Enforce max string length with ellipsis previews.',
-    category: 'filtering',
-  },
-
-  // Deletion
+  // Common - Cleanup & Deletion
   {
     id: 'delete-specific-attributes',
-    name: 'Delete Specific Attributes',
-    description: 'Remove selected attributes from telemetry.',
+    name: 'Delete Attribute',
+    description: 'Remove an attribute you don\'t need',
     category: 'deletion',
   },
   {
     id: 'keep-only-listed',
-    name: 'Keep Only Listed',
-    description: 'Whitelist attributes and drop everything else.',
-    category: 'deletion',
-  },
-  {
-    id: 'remove-by-pattern',
-    name: 'Remove by Pattern',
-    description: 'Use regex patterns to drop groups of attributes.',
+    name: 'Keep Only These',
+    description: 'Keep specific attributes, delete everything else',
     category: 'deletion',
   },
 
-  // Metric-Specific
+  // Common - Modify
+  {
+    id: 'add-static-attribute',
+    name: 'Add Attribute',
+    description: 'Add a new attribute with a fixed value',
+    category: 'attribute',
+  },
+  {
+    id: 'copy-between-scopes',
+    name: 'Move Attribute',
+    description: 'Move between resource, span, or log scopes',
+    category: 'attribute',
+  },
+
+  // Filtering
+  {
+    id: 'drop-by-condition',
+    name: 'Drop Records',
+    description: 'Remove entire records that match a condition',
+    category: 'filtering',
+  },
+  {
+    id: 'sample-telemetry',
+    name: 'Sample Traffic',
+    description: 'Keep only a percentage of records to reduce volume',
+    category: 'filtering',
+  },
+
+  // Advanced - Parsing
+  {
+    id: 'extract-regex-pattern',
+    name: 'Extract with Regex',
+    description: 'Pull values from text using patterns',
+    category: 'parsing',
+  },
+  {
+    id: 'parse-json-body',
+    name: 'Parse JSON',
+    description: 'Extract fields from JSON strings',
+    category: 'parsing',
+  },
+
+  // Advanced - Formatting
+  {
+    id: 'truncate-values',
+    name: 'Truncate Long Values',
+    description: 'Shorten strings that exceed a max length',
+    category: 'formatting',
+  },
+
+  // Metric-Specific (shown only when relevant)
   {
     id: 'convert-metric-type',
     name: 'Convert Metric Type',
-    description: 'Convert between sum, gauge, and histogram signals.',
-    category: 'metric',
-    signal: 'metric',
-    compatibleSignals: ['metric'],
-  },
-  {
-    id: 'set-metric-metadata',
-    name: 'Set Metric Metadata',
-    description: 'Update metric descriptions, units, and display types.',
-    category: 'metric',
-    signal: 'metric',
-    compatibleSignals: ['metric'],
-  },
-  {
-    id: 'datapoint-operations',
-    name: 'Datapoint Operations',
-    description: 'Adjust datapoint values or attributes per sample.',
+    description: 'Change between sum, gauge, and histogram',
     category: 'metric',
     signal: 'metric',
     compatibleSignals: ['metric'],
   },
   {
     id: 'scale-values',
-    name: 'Scale Values',
-    description: 'Multiply or divide metric values to convert units.',
+    name: 'Scale Metric Values',
+    description: 'Multiply or divide values (e.g., bytes to KB)',
     category: 'metric',
     signal: 'metric',
     compatibleSignals: ['metric'],
-  },
-  {
-    id: 'convert-sum-to-gauge',
-    name: 'Convert Sum to Gauge',
-    description: 'Use convert_sum_to_gauge() to turn sum metrics into gauges.',
-    category: 'metric',
-    signal: 'metric',
-    compatibleSignals: ['metric'],
-  },
-  {
-    id: 'extract-count-metric',
-    name: 'Extract Count Metric',
-    description: 'Create a new metric from histogram or summary counts.',
-    category: 'metric',
-    signal: 'metric',
-    compatibleSignals: ['metric'],
-  },
-  {
-    id: 'extract-sum-metric',
-    name: 'Extract Sum Metric',
-    description: 'Create a new metric from histogram or summary sums.',
-    category: 'metric',
-    signal: 'metric',
-    compatibleSignals: ['metric'],
-  },
-  {
-    id: 'convert-summary-count-to-sum',
-    name: 'Summary Count to Sum',
-    description: 'Use convert_summary_count_val_to_sum() for summary datapoints.',
-    category: 'metric',
-    signal: 'metric',
-    compatibleSignals: ['metric'],
-  },
-  {
-    id: 'summary-quantile-to-gauge',
-    name: 'Summary Quantile to Gauge',
-    description: 'Convert summary quantiles into gauge metrics.',
-    category: 'metric',
-    signal: 'metric',
-    compatibleSignals: ['metric'],
-  },
-  {
-    id: 'convert-summary-sum-to-sum',
-    name: 'Summary Sum to Sum',
-    description: 'Normalize summary sums using convert_summary_sum_val_to_sum().',
-    category: 'metric',
-    signal: 'metric',
-    compatibleSignals: ['metric'],
-  },
-  {
-    id: 'copy-metric',
-    name: 'Copy Metric',
-    description: 'Duplicate metric streams with copy_metric().',
-    category: 'metric',
-    signal: 'metric',
-    compatibleSignals: ['metric'],
-  },
-  {
-    id: 'aggregate-on-attributes',
-    name: 'Aggregate on Attributes',
-    description: 'Roll up datapoints grouped by selected attributes.',
-    category: 'metric',
-    signal: 'metric',
-    compatibleSignals: ['metric'],
-  },
-  {
-    id: 'convert-exp-histogram',
-    name: 'Convert Exponential Histogram',
-    description: 'Convert exponential histograms to standard histograms.',
-    category: 'metric',
-    signal: 'metric',
-    compatibleSignals: ['metric'],
-  },
-  {
-    id: 'aggregate-on-attribute-value',
-    name: 'Aggregate on Attribute Value',
-    description: 'Roll up datapoints grouped by a specific attribute value.',
-    category: 'metric',
-    signal: 'metric',
-    compatibleSignals: ['metric'],
-  },
-  {
-    id: 'merge-histogram-buckets',
-    name: 'Merge Histogram Buckets',
-    description: 'Combine histogram buckets into aggregated buckets.',
-    category: 'metric',
-    signal: 'metric',
-    compatibleSignals: ['metric'],
-  },
-
-  // Formatting & Presentation
-  {
-    id: 'format-strings',
-    name: 'Format Strings',
-    description: 'Use templates and placeholders to reshape strings.',
-    category: 'formatting',
-  },
-  {
-    id: 'format-timestamps',
-    name: 'Format Timestamps',
-    description: 'Convert timestamps into readable formats.',
-    category: 'formatting',
-  },
-  {
-    id: 'normalize-units',
-    name: 'Normalize Units',
-    description: 'Convert between ms↔s, bytes↔MB, and more.',
-    category: 'formatting',
-  },
-  {
-    id: 'sort-arrays',
-    name: 'Sort Arrays',
-    description: 'Sort array attributes ascending or descending.',
-    category: 'formatting',
-  },
-
-  // Advanced Operations
-  {
-    id: 'type-conversion',
-    name: 'Type Conversion',
-    description: 'Cast values to integers, doubles, durations, and more.',
-    category: 'advanced',
-  },
-  {
-    id: 'body-remapping',
-    name: 'Body Remapping',
-    description: 'Move values between log.body and attributes.',
-    category: 'advanced',
-  },
-  {
-    id: 'severity-adjustment',
-    name: 'Severity Adjustment',
-    description: 'Normalize log severity levels or map custom levels.',
-    category: 'advanced',
-  },
-  {
-    id: 'cache-variables',
-    name: 'Cache Variables',
-    description: 'Store reusable values for later transformation steps.',
-    category: 'advanced',
-  },
-  {
-    id: 'custom-ottl',
-    name: 'Custom OTTL',
-    description: 'Write raw OTTL statements for advanced scenarios.',
-    category: 'advanced',
   },
 ];
 
+// Muted category styles - consistent, subtle differentiation
 const categoryChipStyles: Record<TransformationType['category'], string> = {
-  attribute: 'bg-success/90 text-success-foreground border border-success/70 shadow-sm',
-  parsing: 'bg-secondary/90 text-secondary-foreground border border-secondary/70 shadow-sm',
-  privacy: 'bg-warning/90 text-black border border-warning/70 shadow-sm',
-  filtering: 'bg-primary/85 text-primary-foreground border border-primary/70 shadow-sm',
-  deletion: 'bg-danger/85 text-danger-foreground border border-danger/70 shadow-sm',
-  metric: 'bg-background-soft/80 text-text-primary border border-border/70 shadow-sm',
-  formatting: 'bg-secondary/80 text-secondary-foreground border border-secondary/60 shadow-sm',
-  advanced: 'bg-primary/90 text-primary-foreground border border-primary/80 shadow-sm',
+  attribute: 'bg-slate-700/50 text-slate-200 border border-slate-600/50',
+  parsing: 'bg-slate-700/50 text-slate-200 border border-slate-600/50',
+  privacy: 'bg-slate-700/50 text-slate-200 border border-slate-600/50',
+  filtering: 'bg-slate-700/50 text-slate-200 border border-slate-600/50',
+  deletion: 'bg-danger/20 text-danger border border-danger/30',
+  metric: 'bg-slate-700/50 text-slate-200 border border-slate-600/50',
+  formatting: 'bg-slate-700/50 text-slate-200 border border-slate-600/50',
+  advanced: 'bg-slate-700/50 text-slate-200 border border-slate-600/50',
 };
 
 /**
  * AddTransformationModal - Transformation catalog
  * Browse and select transformations to add to pipeline
  */
+const categoryMeta: Record<
+  TransformationType['category'] | 'all',
+  { label: string; short: string; icon: string }
+> = {
+  all: { label: 'All', short: 'ALL', icon: '★' },
+  attribute: { label: 'Attribute', short: 'ATTR', icon: '🧩' },
+  parsing: { label: 'Parsing', short: 'PARSE', icon: '🛠️' },
+  privacy: { label: 'Privacy', short: 'PRIV', icon: '🔒' },
+  filtering: { label: 'Filtering', short: 'FILTER', icon: '⏳' },
+  deletion: { label: 'Deletion', short: 'DEL', icon: '🗑️' },
+  metric: { label: 'Metric', short: 'METRIC', icon: '📈' },
+  formatting: { label: 'Formatting', short: 'FMT', icon: '🎨' },
+  advanced: { label: 'Advanced', short: 'ADV', icon: '🔧' },
+};
+
 export function AddTransformationModal({
   isOpen,
   onClose,
@@ -400,15 +185,15 @@ export function AddTransformationModal({
   const [recentlyAdded, setRecentlyAdded] = useState<Set<string>>(new Set());
 
   const categories = [
-    { key: 'all', label: 'All' },
-    { key: 'attribute', label: '🟢 Attribute' },
-    { key: 'parsing', label: '🟣 Parsing' },
-    { key: 'privacy', label: '🟡 Privacy' },
-    { key: 'filtering', label: '🟠 Filtering' },
-    { key: 'deletion', label: '🔴 Deletion' },
-    { key: 'metric', label: '⚙️ Metric' },
-    { key: 'formatting', label: '🎨 Formatting' },
-    { key: 'advanced', label: '🔧 Advanced' },
+    { key: 'all', label: `${categoryMeta.all.icon} ${categoryMeta.all.label}` },
+    { key: 'attribute', label: `${categoryMeta.attribute.icon} ${categoryMeta.attribute.label} (${categoryMeta.attribute.short})` },
+    { key: 'parsing', label: `${categoryMeta.parsing.icon} ${categoryMeta.parsing.label} (${categoryMeta.parsing.short})` },
+    { key: 'privacy', label: `${categoryMeta.privacy.icon} ${categoryMeta.privacy.label} (${categoryMeta.privacy.short})` },
+    { key: 'filtering', label: `${categoryMeta.filtering.icon} ${categoryMeta.filtering.label} (${categoryMeta.filtering.short})` },
+    { key: 'deletion', label: `${categoryMeta.deletion.icon} ${categoryMeta.deletion.label} (${categoryMeta.deletion.short})` },
+    { key: 'metric', label: `${categoryMeta.metric.icon} ${categoryMeta.metric.label} (${categoryMeta.metric.short})` },
+    { key: 'formatting', label: `${categoryMeta.formatting.icon} ${categoryMeta.formatting.label} (${categoryMeta.formatting.short})` },
+    { key: 'advanced', label: `${categoryMeta.advanced.icon} ${categoryMeta.advanced.label} (${categoryMeta.advanced.short})` },
   ];
 
   const filteredTransformations = useMemo(() => {

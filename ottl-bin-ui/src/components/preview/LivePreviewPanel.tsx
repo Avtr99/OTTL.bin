@@ -11,12 +11,18 @@ import {
   PencilLine,
   Maximize2,
 } from 'lucide-react';
+import { TypeBadge, inferValueType } from '../common/TypeBadge';
+import type { ValueType } from '../common/TypeBadge';
+import { AttributeContextMenu, detectSmartActions } from './AttributeContextMenu';
+import type { AttributeContextAction } from './AttributeContextMenu';
 
 type PreviewRecord = Record<string, unknown> | null;
 
 export interface LivePreviewPanelProps {
-  currentStep: number;
-  totalSteps: number;
+  /** @deprecated No longer displayed - step indicators removed per UX feedback */
+  currentStep?: number;
+  /** @deprecated No longer displayed - step indicators removed per UX feedback */
+  totalSteps?: number;
   currentSample: number;
   totalSamples: number;
   before: PreviewRecord;
@@ -26,6 +32,7 @@ export interface LivePreviewPanelProps {
   onFieldAction?: (field: string, value: unknown) => void;
   availableActions?: LivePreviewQuickAction[];
   onQuickAction?: (actionId: string, entry: DiffEntry) => void;
+  onAttributeAction?: (action: AttributeContextAction, key: string, value: unknown) => void;
   isLoading?: boolean;
   errorMessage?: string;
   variant?: 'default' | 'modal';
@@ -45,11 +52,13 @@ export type LivePreviewDiffEntry = DiffEntry;
 interface FlattenedEntry {
   key: string;
   value: unknown;
+  type: ValueType;
 }
 
 interface DiffEntry extends FlattenedEntry {
   status: 'added' | 'removed' | 'modified' | 'unchanged';
   previous?: unknown;
+  previousType?: ValueType;
 }
 
 const flattenRecord = (record: PreviewRecord, prefix = ''): FlattenedEntry[] => {
@@ -60,7 +69,7 @@ const flattenRecord = (record: PreviewRecord, prefix = ''): FlattenedEntry[] => 
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       return flattenRecord(value as Record<string, unknown>, path);
     }
-    return [{ key: path, value }];
+    return [{ key: path, value, type: inferValueType(value) }];
   });
 };
 
@@ -68,28 +77,50 @@ const buildDiff = (before: PreviewRecord, after: PreviewRecord): DiffEntry[] => 
   const beforeEntries = flattenRecord(before);
   const afterEntries = flattenRecord(after);
 
-  const beforeMap = new Map(beforeEntries.map((entry) => [entry.key, entry.value]));
-  const afterMap = new Map(afterEntries.map((entry) => [entry.key, entry.value]));
+  const beforeMap = new Map(beforeEntries.map((entry) => [entry.key, entry]));
+  const afterMap = new Map(afterEntries.map((entry) => [entry.key, entry]));
 
   const keys = new Set([...beforeMap.keys(), ...afterMap.keys()]);
 
   return Array.from(keys).map((key) => {
-    const prev = beforeMap.get(key);
-    const next = afterMap.get(key);
+    const prevEntry = beforeMap.get(key);
+    const nextEntry = afterMap.get(key);
 
-    if (prev === undefined && next !== undefined) {
-      return { key, value: next, status: 'added' } satisfies DiffEntry;
+    if (!prevEntry && nextEntry) {
+      return { 
+        key, 
+        value: nextEntry.value, 
+        type: nextEntry.type,
+        status: 'added' 
+      } satisfies DiffEntry;
     }
 
-    if (prev !== undefined && next === undefined) {
-      return { key, value: prev, status: 'removed' } satisfies DiffEntry;
+    if (prevEntry && !nextEntry) {
+      return { 
+        key, 
+        value: prevEntry.value, 
+        type: prevEntry.type,
+        status: 'removed' 
+      } satisfies DiffEntry;
     }
 
-    if (JSON.stringify(prev) !== JSON.stringify(next)) {
-      return { key, value: next, previous: prev, status: 'modified' } satisfies DiffEntry;
+    if (prevEntry && nextEntry && JSON.stringify(prevEntry.value) !== JSON.stringify(nextEntry.value)) {
+      return { 
+        key, 
+        value: nextEntry.value, 
+        type: nextEntry.type,
+        previous: prevEntry.value,
+        previousType: prevEntry.type,
+        status: 'modified' 
+      } satisfies DiffEntry;
     }
 
-    return { key, value: next, status: 'unchanged' } satisfies DiffEntry;
+    return { 
+      key, 
+      value: nextEntry?.value, 
+      type: nextEntry?.type ?? 'undefined',
+      status: 'unchanged' 
+    } satisfies DiffEntry;
   });
 };
 
@@ -108,8 +139,6 @@ const statusLabel: Record<DiffEntry['status'], string> = {
 };
 
 export function LivePreviewPanel({
-  currentStep,
-  totalSteps,
   currentSample,
   totalSamples,
   before,
@@ -119,6 +148,7 @@ export function LivePreviewPanel({
   onFieldAction,
   availableActions,
   onQuickAction,
+  onAttributeAction,
   isLoading = false,
   errorMessage,
   variant = 'default',
@@ -160,7 +190,7 @@ export function LivePreviewPanel({
   const cardHeightClass =
     variant === 'modal'
       ? 'h-[75vh]'
-      : 'h-full min-h-[640px] max-h-[calc(100vh-16rem)]';
+      : 'h-full min-h-[400px] max-h-[calc(100vh-10rem)]';
 
   return (
     <Card
@@ -173,9 +203,6 @@ export function LivePreviewPanel({
           <div className="flex items-center gap-3">
             <Sparkles size={18} className="text-primary" />
             <h3 className="text-lg font-semibold text-text-primary">Live Preview</h3>
-            <Chip size="sm" variant="flat" color="primary" className="border border-primary/40">
-              Step {currentStep} of {totalSteps}
-            </Chip>
           </div>
           <div className="flex items-center gap-2">
             {onExpandRequest && variant !== 'modal' && (
@@ -271,15 +298,41 @@ export function LivePreviewPanel({
               </div>
               <div className="rounded-xl border border-border/60 bg-background-soft/80 shadow-inner overflow-auto">
                 <ul className="divide-y divide-border/60">
-                  {flattenRecord(before).map((entry) => (
-                    <li
-                      key={entry.key}
-                      className="flex items-start justify-between gap-3 px-4 py-2 text-xs text-text-secondary"
-                    >
-                      <span className="font-mono text-text-secondary/80">{entry.key}</span>
-                      <span className="text-text-primary/90">{String(entry.value)}</span>
-                    </li>
-                  ))}
+                  {flattenRecord(before).map((entry) => {
+                    const smartActions = detectSmartActions(entry.key, entry.value);
+                    const hasSuggestion = smartActions.some(a => a === 'mask' || a === 'hash');
+                    return (
+                      <li
+                        key={entry.key}
+                        className="group grid grid-cols-[auto_1fr_auto_auto] items-center gap-2 px-4 py-2 text-xs text-text-secondary hover:bg-primary/5 transition-colors"
+                      >
+                        {/* Warning icon */}
+                        <div className="w-4 flex-shrink-0">
+                          {hasSuggestion && (
+                            <Tooltip content="Sensitive data detected - consider masking or hashing" placement="top">
+                              <span className="text-amber-500">
+                                <AlertTriangle size={14} />
+                              </span>
+                            </Tooltip>
+                          )}
+                        </div>
+                        {/* Key */}
+                        <span className="font-mono text-text-secondary/80 truncate min-w-0">{entry.key}</span>
+                        {/* Type badge */}
+                        <TypeBadge type={entry.type} size="sm" showIcon={false} />
+                        {/* Value + actions */}
+                        <div className="flex items-center gap-2 justify-end">
+                          <span className="text-text-primary/90 truncate max-w-[150px]">{String(entry.value)}</span>
+                          {onAttributeAction && (
+                            <AttributeContextMenu
+                              context="attribute-row"
+                              onAction={(action) => onAttributeAction(action, entry.key, entry.value)}
+                            />
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             </div>
@@ -308,7 +361,10 @@ export function LivePreviewPanel({
                         }}
                       >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-mono text-text-primary/90">{entry.key}</span>
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <span className="font-mono text-text-primary/90 truncate">{entry.key}</span>
+                          <TypeBadge type={entry.type} size="sm" showIcon={false} />
+                        </div>
                         <div className="flex items-center gap-2">
                           {entry.status === 'modified' && (
                             <Tooltip content="Edit this attribute manually" placement="top" className="text-xs">
@@ -335,9 +391,16 @@ export function LivePreviewPanel({
                       <div className="flex flex-col gap-1 text-text-primary">
                         <span className="font-semibold text-text-primary">{String(entry.value)}</span>
                         {entry.status === 'modified' && (
-                          <span className="text-[11px] text-text-secondary/80">
-                            previously {String(entry.previous)}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] text-text-secondary/80">
+                              previously {String(entry.previous)}
+                            </span>
+                            {entry.previousType && entry.previousType !== entry.type && (
+                              <span className="text-[11px] text-text-secondary/60">
+                                (type changed: {entry.previousType} → {entry.type})
+                              </span>
+                            )}
+                          </div>
                         )}
                       </div>
                     </li>
@@ -349,7 +412,7 @@ export function LivePreviewPanel({
           </div>
         )}
 
-        {hasData && totalSteps > 0 && (
+        {hasData && (
           <div className="mt-5 flex flex-col gap-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2">

@@ -166,6 +166,36 @@ export function RawOttlEditorModal({
             </Card>
           )}
 
+          {hasCustomEdits && (
+            <Card className="mt-3 bg-success/10 border border-success/40">
+              <CardBody className="py-3 px-4">
+                <div className="flex items-start gap-3">
+                  <AlertCircle size={18} className="text-success mt-0.5" />
+                  <div className="flex-1 text-sm">
+                    <p className="font-semibold text-success">Custom OTTL Active</p>
+                    <p className="text-text-secondary mt-1">
+                      Your custom OTTL is being applied to the Live Preview. Supported functions:
+                    </p>
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      <code className="text-xs bg-background-soft px-1.5 py-0.5 rounded">set</code>
+                      <code className="text-xs bg-background-soft px-1.5 py-0.5 rounded">delete_key</code>
+                      <code className="text-xs bg-background-soft px-1.5 py-0.5 rounded">replace_pattern</code>
+                      <code className="text-xs bg-background-soft px-1.5 py-0.5 rounded">keep_keys</code>
+                      <code className="text-xs bg-background-soft px-1.5 py-0.5 rounded">truncate_all</code>
+                      <code className="text-xs bg-background-soft px-1.5 py-0.5 rounded">limit</code>
+                      <code className="text-xs bg-background-soft px-1.5 py-0.5 rounded">drop</code>
+                      <code className="text-xs bg-background-soft px-1.5 py-0.5 rounded">Concat</code>
+                      <code className="text-xs bg-background-soft px-1.5 py-0.5 rounded">Split</code>
+                      <code className="text-xs bg-background-soft px-1.5 py-0.5 rounded">ParseJSON</code>
+                      <code className="text-xs bg-background-soft px-1.5 py-0.5 rounded">SHA256</code>
+                      <code className="text-xs bg-background-soft px-1.5 py-0.5 rounded">IsMatch</code>
+                    </div>
+                  </div>
+                </div>
+              </CardBody>
+            </Card>
+          )}
+
           {signalValidationErrors.length > 0 && (
             <Card className="mt-3 bg-danger/10 border border-danger/40">
               <CardBody className="py-3 px-4">

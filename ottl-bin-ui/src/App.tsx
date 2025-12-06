@@ -5,34 +5,31 @@ import { TransformationList } from './components/transformations/TransformationL
 import type { Transformation, TransformationSignal } from './components/transformations/TransformationList';
 import { LivePreviewPanel } from './components/preview/LivePreviewPanel';
 import type { LivePreviewQuickAction, LivePreviewDiffEntry } from './components/preview/LivePreviewPanel';
-import { SuggestionPanel } from './components/suggestions/SuggestionPanel';
-import type { Suggestion } from './components/suggestions/SuggestionPanel';
-import { CostImpactPanel } from './components/impact/CostImpactPanel';
-import type { ImpactMetrics } from './components/impact/CostImpactPanel';
+// Removed per UX feedback - Smart Suggestions take too much real estate
+// import { SuggestionPanel } from './components/suggestions/SuggestionPanel';
+// import type { Suggestion } from './components/suggestions/SuggestionPanel';
+// Removed per UX feedback - Cost estimates not realistic for multi-transformation pipelines
+// import { CostImpactPanel } from './components/impact/CostImpactPanel';
+// import type { ImpactMetrics } from './components/impact/CostImpactPanel';
 import { AddTransformationModal, defaultTransformations } from './components/modals/AddTransformationModal';
 import type { TransformationType } from './components/modals/AddTransformationModal';
-import { TemplateLibraryModal } from './components/modals/TemplateLibraryModal';
-import type { TransformationTemplate } from './components/modals/TemplateLibraryModal';
 import { RawOttlEditorModal } from './components/ottl/RawOttlEditorModal';
+import { SignalTabs } from './components/pipeline/SignalTabs';
 import {
   Card,
   CardBody,
   CardHeader,
   Button,
   Chip,
-  Select,
-  SelectItem,
   Modal,
   ModalContent,
   ModalHeader,
   ModalBody,
 } from '@heroui/react';
-import type { Selection } from '@heroui/react';
 import {
   Plus,
   Upload,
   PencilLine,
-  FileDown,
   EyeOff,
   Trash2,
   Fingerprint,
@@ -42,6 +39,7 @@ import {
 import { toast } from 'sonner';
 import { parseTelemetryJSON } from './utils/otlpParser';
 import { autoDetectTransformations, getDetectionSummary } from './utils/autoDetectTransformations';
+import { applyRawOttl } from './utils/ottlInterpreter';
 
 type TelemetryRecord = Record<string, unknown>;
 
@@ -72,47 +70,6 @@ const inferOperationFromTitle = (title: string): string | undefined => {
   return undefined;
 };
 
-const advancedTemplates: TransformationTemplate[] = [
-  {
-    id: 'template-pii-essentials',
-    name: 'PII Protection Essentials',
-    category: 'Security & Privacy',
-    description: 'Mask emails, hash identifiers, and redact secrets from telemetry streams.',
-    transformations: ['mask-with-pattern', 'hash-attributes', 'redact-with-wildcards'],
-    estimatedImpact: {
-      storageReduction: 8,
-      monthlySavings: 110,
-      recordsAffected: 180,
-      totalRecords: 250,
-    },
-  },
-  {
-    id: 'template-cost-control',
-    name: 'Cost Control Starter',
-    category: 'Cost Optimization',
-    description: 'Trim high-cardinality attributes and sample noisy traffic to cut storage.',
-    transformations: ['sample-telemetry', 'limit-attribute-count', 'truncate-values'],
-    estimatedImpact: {
-      storageReduction: 18,
-      monthlySavings: 240,
-      recordsAffected: 220,
-      totalRecords: 250,
-    },
-  },
-  {
-    id: 'template-http-cleanup',
-    name: 'HTTP Telemetry Cleanup',
-    category: 'Operations',
-    description: 'Parse JSON payloads, remove noisy attributes, and keep request context tidy.',
-    transformations: ['parse-json-body', 'remove-by-pattern', 'delete-specific-attributes'],
-    estimatedImpact: {
-      storageReduction: 12,
-      monthlySavings: 150,
-      recordsAffected: 160,
-      totalRecords: 250,
-    },
-  },
-];
 
 type StatementContext = 'span' | 'spanevent' | 'resource' | 'scope' | 'metric' | 'datapoint' | 'log';
 
@@ -218,35 +175,147 @@ const applyTransformations = (
         return;
       }
       
-      // Handle legacy manual transformations
+      // Handle catalog transformations with config.type
+      const config = transformation.config as Record<string, unknown> | undefined;
+      const configType = config?.type as string | undefined;
+      const field = config?.field as string | undefined;
+      
+      if (configType) {
+        switch (configType) {
+          case 'mask': {
+            // Mask sensitive values - apply to specified field or find sensitive fields
+            if (field && cloned[field] !== undefined) {
+              cloned[field] = '********';
+            } else {
+              // Find and mask common sensitive fields
+              Object.keys(cloned).forEach((key) => {
+                if (key.includes('password') || key.includes('secret') || 
+                    key.includes('token') || key.includes('api.key')) {
+                  cloned[key] = '********';
+                }
+              });
+            }
+            break;
+          }
+          case 'hash': {
+            // Hash PII - apply to specified field or find PII fields
+            if (field && typeof cloned[field] === 'string') {
+              cloned[field] = hashEmail(cloned[field]);
+            } else {
+              Object.keys(cloned).forEach((key) => {
+                if ((key.includes('email') || key.includes('user.id') || key.includes('uid')) 
+                    && typeof cloned[key] === 'string') {
+                  cloned[key] = hashEmail(cloned[key]);
+                }
+              });
+            }
+            break;
+          }
+          case 'delete': {
+            // Delete specific attribute
+            if (field) {
+              delete cloned[field];
+            }
+            break;
+          }
+          case 'keep': {
+            // Keep only specified attributes
+            const keepFields = config?.fields as string[] | undefined;
+            if (keepFields && keepFields.length > 0) {
+              Object.keys(cloned).forEach((key) => {
+                if (!keepFields.some(f => key.includes(f))) {
+                  delete cloned[key];
+                }
+              });
+            }
+            break;
+          }
+          case 'add': {
+            // Add new attribute
+            const newField = config?.newField as string | undefined;
+            const value = config?.value as string | undefined;
+            if (newField) {
+              cloned[newField] = value || 'default_value';
+            }
+            break;
+          }
+          case 'move': {
+            // Move between scopes
+            const from = config?.from as string | undefined;
+            const to = config?.to as string | undefined;
+            if (field && from && to) {
+              const sourceKey = `${from}.${field}`;
+              const targetKey = `${to}.${field}`;
+              if (cloned[sourceKey] !== undefined) {
+                cloned[targetKey] = cloned[sourceKey];
+                delete cloned[sourceKey];
+              }
+            }
+            break;
+          }
+          case 'drop': {
+            // Mark record as dropped
+            cloned['_dropped'] = true;
+            break;
+          }
+          case 'sample': {
+            // Mark for sampling
+            cloned['_sampled'] = true;
+            break;
+          }
+          case 'truncate': {
+            // Truncate long values
+            const maxLength = (config?.maxLength as number) || 256;
+            Object.keys(cloned).forEach((key) => {
+              if (typeof cloned[key] === 'string' && (cloned[key] as string).length > maxLength) {
+                cloned[key] = (cloned[key] as string).substring(0, maxLength) + '...';
+              }
+            });
+            break;
+          }
+          case 'parseJson': {
+            // Parse JSON from a field
+            if (field && typeof cloned[field] === 'string') {
+              try {
+                const parsed = JSON.parse(cloned[field] as string);
+                Object.entries(parsed).forEach(([k, v]) => {
+                  cloned[`${field}.${k}`] = v;
+                });
+              } catch {
+                // Invalid JSON, skip
+              }
+            }
+            break;
+          }
+          case 'scale': {
+            // Scale metric values
+            const factor = (config?.factor as number) || 1;
+            if (field && typeof cloned[field] === 'number') {
+              cloned[field] = (cloned[field] as number) * factor;
+            }
+            break;
+          }
+          default:
+            // Unknown type, skip
+            break;
+        }
+        return;
+      }
+      
+      // Handle legacy manual transformations (fallback)
       switch (transformation.title) {
         case 'Mask Passwords': {
-          // Handle both legacy and OTLP formats
           if (typeof cloned['process.command_line'] === 'string') {
-            cloned['process.command_line'] = maskCommandLineSecrets(
-              cloned['process.command_line'],
-            );
+            cloned['process.command_line'] = maskCommandLineSecrets(cloned['process.command_line']);
           }
-          // Mask auth tokens in OTLP resource attributes
           if (typeof cloned['resource.dash0.auth.token'] === 'string') {
             cloned['resource.dash0.auth.token'] = '********';
           }
           break;
         }
         case 'Hash Email Addresses': {
-          // Handle both legacy and OTLP formats
           if (typeof cloned['user.email'] === 'string') {
             cloned['user.email'] = hashEmail(cloned['user.email']);
-          }
-          // Hash GUIDs and UUIDs in OTLP
-          if (typeof cloned['span.attributes.guid:x-request-id'] === 'string') {
-            cloned['span.attributes.guid:x-request-id'] = hashEmail(cloned['span.attributes.guid:x-request-id']);
-          }
-          if (typeof cloned['resource.k8s.pod.uid'] === 'string') {
-            cloned['resource.k8s.pod.uid'] = hashEmail(cloned['resource.k8s.pod.uid']);
-          }
-          if (typeof cloned['resource.k8s.deployment.uid'] === 'string') {
-            cloned['resource.k8s.deployment.uid'] = hashEmail(cloned['resource.k8s.deployment.uid']);
           }
           break;
         }
@@ -316,53 +385,11 @@ const parseTelemetryText = (text: string): TelemetryRecord[] => {
 };
 
 function App() {
-  const [transformations, setTransformations] = useState<Transformation[]>([
-    {
-      id: '1',
-      title: 'Mask Passwords',
-      description: 'Pattern: password=VALUE in process.command_line',
-      category: 'privacy',
-      isEnabled: true,
-      recordsAffected: '23/250 records',
-      sizeChange: '<1%',
-      signal: 'trace',
-      compatibleSignals: ['trace', 'log'],
-    },
-    {
-      id: '2',
-      title: 'Hash Email Addresses',
-      description: 'SHA256 hash for user.email attribute',
-      category: 'privacy',
-      isEnabled: true,
-      recordsAffected: '250/250 records',
-      sizeChange: '+2%',
-      signal: 'trace',
-      compatibleSignals: ['trace', 'metric', 'log'],
-    },
-    {
-      id: '3',
-      title: 'Sample High-Volume Traces',
-      description: 'Keep 10% of health check traces',
-      category: 'filtering',
-      isEnabled: false,
-      recordsAffected: '180/250 records',
-      sizeChange: '-45%',
-      signal: 'trace',
-      compatibleSignals: ['trace'],
-    },
-  ]);
+  // Start with empty transformations - user builds their pipeline
+  const [transformations, setTransformations] = useState<Transformation[]>([]);
 
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [impactMetrics, setImpactMetrics] = useState<ImpactMetrics>();
-
-  const defaultSample: TelemetryRecord = {
-    'trace.id': 'abc123',
-    'user.email': 'user@example.com',
-    'process.command_line': 'app --password=secret123',
-    'http.status_code': 200,
-  };
-
-  const [samples, setSamples] = useState<TelemetryRecord[]>([defaultSample]);
+  // Start with no samples - user uploads their telemetry
+  const [samples, setSamples] = useState<TelemetryRecord[]>([]);
   const [currentSampleIndex, setCurrentSampleIndex] = useState(0);
   const [isProcessingSample, setIsProcessingSample] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -373,230 +400,35 @@ function App() {
   const [isRawEditorOpen, setIsRawEditorOpen] = useState(false);
   const [isTransformationsModalOpen, setIsTransformationsModalOpen] = useState(false);
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
-
-  const telemetrySources = useMemo(
-    () => [
-      {
-        id: 'anz-payments-prod',
-        name: 'ANZ Payments • Production',
-        environment: 'prod-ap-southeast-2',
-        recordsPerHour: 48000,
-        activeSamples: 250,
-        description: 'Real-time banking spans across payment gateways and fraud detection services.',
-        lastSynced: '2 minutes ago',
-        costBefore: 7200,
-        costAfter: 2100,
-        avgRecordSizeBefore: 1820,
-        avgRecordSizeAfter: 980,
-        storageReduction: 46,
-        attributeReduction: 14,
-        sizeReduction: '3.1 MB',
-        removedAttributes: [
-          'resource.attributes.aws.lambda.memory_limit',
-          'span.attributes.net.peer.name',
-          'span.attributes.http.request.body',
-          'span.attributes.db.statement',
-          'span.attributes.telemetry.sdk.version',
-        ],
-        suggestionInsights: {
-          sensitiveCount: 23,
-          highAttributeCount: 67,
-          largeValueCount: 12,
-          missingTraceIds: 9,
-          errorSpikeRate: 8,
-          unsampledRate: 32,
-        },
-      },
-      {
-        id: 'anz-analytics-dev',
-        name: 'ANZ Analytics • Staging',
-        environment: 'staging-ap-southeast-2',
-        recordsPerHour: 8200,
-        activeSamples: 120,
-        description: 'Synthetic telemetry used for integration testing of data science pipelines.',
-        lastSynced: '12 minutes ago',
-        costBefore: 1850,
-        costAfter: 950,
-        avgRecordSizeBefore: 1120,
-        avgRecordSizeAfter: 760,
-        storageReduction: 31,
-        attributeReduction: 7,
-        sizeReduction: '1.2 MB',
-        removedAttributes: ['span.attributes.debug.payload', 'span.attributes.temp.trace_id'],
-        suggestionInsights: {
-          sensitiveCount: 3,
-          highAttributeCount: 29,
-          largeValueCount: 7,
-          missingTraceIds: 0,
-          errorSpikeRate: 2,
-          unsampledRate: 18,
-        },
-      },
-      {
-        id: 'anz-observability-shared',
-        name: 'Observability Shared Cluster',
-        environment: 'prod-us-east-1',
-        recordsPerHour: 109000,
-        activeSamples: 250,
-        description: 'Central collector for platform services spanning multiple product teams.',
-        lastSynced: '45 seconds ago',
-        costBefore: 9200,
-        costAfter: 4100,
-        avgRecordSizeBefore: 2050,
-        avgRecordSizeAfter: 1430,
-        storageReduction: 39,
-        attributeReduction: 18,
-        sizeReduction: '4.6 MB',
-        removedAttributes: [
-          'span.attributes.debug.raw_sql',
-          'log.attributes.stacktrace',
-          'resource.attributes.k8s.pod.annotations',
-        ],
-        suggestionInsights: {
-          sensitiveCount: 11,
-          highAttributeCount: 84,
-          largeValueCount: 26,
-          missingTraceIds: 14,
-          errorSpikeRate: 17,
-          unsampledRate: 46,
-        },
-      },
-    ],
-    [],
-  );
-
-  const [selectedTelemetrySourceId, setSelectedTelemetrySourceId] = useState(
-    telemetrySources[0]?.id ?? 'default-telemetry-source',
-  );
-
-  const selectedTelemetrySource = useMemo(
-    () =>
-      telemetrySources.find((source) => source.id === selectedTelemetrySourceId) ?? telemetrySources[0],
-    [telemetrySources, selectedTelemetrySourceId],
-  );
-
-  useEffect(() => {
-    if (!selectedTelemetrySource) return;
-
-    const {
-      costBefore,
-      costAfter,
-      avgRecordSizeBefore,
-      avgRecordSizeAfter,
-      storageReduction,
-      attributeReduction,
-      sizeReduction,
-      removedAttributes,
-      activeSamples,
-      suggestionInsights,
-      name,
-    } = selectedTelemetrySource;
-
-    setImpactMetrics({
-      storageReduction,
-      attributeReduction,
-      sizeReduction,
-      removedAttributes,
-      estimatedMonthlyCostBefore: costBefore,
-      estimatedMonthlyCostAfter: costAfter,
-      monthlySavings: costBefore - costAfter,
-      averageRecordSizeBefore: avgRecordSizeBefore,
-      averageRecordSizeAfter: avgRecordSizeAfter,
-      recordsAffected: Math.round(activeSamples * (storageReduction / 100)),
-      totalRecords: activeSamples,
-      sourceName: name,
-    });
-
-    if (suggestionInsights) {
-      const nextSuggestions: Suggestion[] = [];
-
-      if (suggestionInsights.sensitiveCount > 0) {
-        nextSuggestions.push({
-          id: 'suggestion-sensitive',
-          type: 'sensitive-data',
-          title: 'Sensitive Data Detected',
-          description: `Found ${suggestionInsights.sensitiveCount} spans containing secrets or passwords.`,
-          guidance:
-            'Use masking or hashing so secrets never leave your environment. Dash0 applies redaction before shipping telemetry.',
-          recommendation: 'Apply the PII Protection Essentials template or run the Mask Passwords transformation.',
-          severity: 'warning',
-          count: suggestionInsights.sensitiveCount,
-          onAutoFix: () => toast.success('Masking transformation applied for detected secrets.'),
-        });
-      }
-
-      if (suggestionInsights.highAttributeCount > 40) {
-        nextSuggestions.push({
-          id: 'suggestion-attributes',
-          type: 'high-attributes',
-          title: 'Attribute Volume Exceeds Target',
-          description: `Average attribute count is ~${suggestionInsights.highAttributeCount}. Aim for fewer than 40 per record.`,
-          guidance:
-            'Large attribute payloads slow down dashboards and increase storage costs. Trimming to critical fields improves performance.',
-          recommendation: 'Use Limit Attribute Count or Drop by Condition to focus on key fields.',
-          severity: 'info',
-          onAutoFix: () => toast.success('Added Limit Attribute Count transformation.'),
-        });
-      }
-
-      if (suggestionInsights.largeValueCount > 0) {
-        nextSuggestions.push({
-          id: 'suggestion-large-values',
-          type: 'large-values',
-          title: 'Oversized attribute values',
-          description: `${suggestionInsights.largeValueCount} attributes exceed recommended payload size.`,
-          guidance:
-            'Large payloads often include verbose request bodies. Truncating or parsing improves search speed.',
-          recommendation: 'Consider Truncate Values or Split & Extract to slim these attributes.',
-          severity: 'info',
-        });
-      }
-
-      if (suggestionInsights.unsampledRate > 30) {
-        nextSuggestions.push({
-          id: 'suggestion-unsampled',
-          type: 'unsampled-traffic',
-          title: 'High Unsampled Traffic',
-          description: `${suggestionInsights.unsampledRate}% of spans are always kept.`,
-          guidance:
-            'Sampling low-value traffic keeps costs predictable while preserving critical signals.',
-          recommendation: 'Introduce Sample Telemetry for health checks, cron jobs, and synthetic probes.',
-          severity: 'warning',
-        });
-      }
-
-      if (suggestionInsights.missingTraceIds > 0) {
-        nextSuggestions.push({
-          id: 'suggestion-trace-id',
-          type: 'missing-trace-ids',
-          title: 'Trace IDs Missing',
-          description: `${suggestionInsights.missingTraceIds} spans lack trace identifiers.`,
-          guidance:
-            'Missing trace IDs break end-to-end correlation. Ensure ingestion pipelines set trace context before export.',
-          recommendation: 'Use Type Conversion or Add Static Attribute to backfill trace.id when available.',
-          severity: 'warning',
-        });
-      }
-
-      if (suggestionInsights.errorSpikeRate > 10) {
-        nextSuggestions.push({
-          id: 'suggestion-error-spike',
-          type: 'error-spikes',
-          title: 'Error spike detected',
-          description: `Error logs grew by ${suggestionInsights.errorSpikeRate}% hour-over-hour.`,
-          guidance:
-            'Spikes often correlate with rapid rollouts. Capture deployment metadata and ensure errors contain actionable context.',
-          recommendation: 'Enable Release Observability template or add Severity Adjustment to normalize levels.',
-          severity: 'warning',
-        });
-      }
-
-      setSuggestions(nextSuggestions);
-    }
-  }, [selectedTelemetrySource]);
-
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
+
+  // Track uploaded file name for display
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+
+  // Multi-signal pipeline support
+  const [activeSignal, setActiveSignal] = useState<'trace' | 'metric' | 'log'>('trace');
+
+  // Helper to check if transformation applies to a signal
+  const transformationMatchesSignal = (t: Transformation, signal: 'trace' | 'metric' | 'log'): boolean => {
+    // Check compatibleSignals first (if defined), then fall back to signal property
+    if (t.compatibleSignals && t.compatibleSignals.length > 0) {
+      return t.compatibleSignals.includes(signal);
+    }
+    return (t.signal ?? 'trace') === signal;
+  };
+
+  // Count transformations by signal (a transformation can appear in multiple signals)
+  const signalCounts = useMemo(() => ({
+    trace: transformations.filter((t) => transformationMatchesSignal(t, 'trace')).length,
+    metric: transformations.filter((t) => transformationMatchesSignal(t, 'metric')).length,
+    log: transformations.filter((t) => transformationMatchesSignal(t, 'log')).length,
+  }), [transformations]);
+
+  // Filter transformations for active signal
+  const filteredTransformations = useMemo(() => 
+    transformations.filter((t) => transformationMatchesSignal(t, activeSignal)),
+    [transformations, activeSignal]
+  );
 
   const previewQuickActions = useMemo<LivePreviewQuickAction[]>(
     () => [
@@ -626,109 +458,365 @@ function App() {
   );
 
   const buildTraceStatement = (transformation: Transformation): BuiltStatement => {
-    switch (transformation.title) {
-      case 'Mask Passwords':
+    const config = transformation.config as Record<string, unknown> | undefined;
+    const field = config?.field as string | undefined;
+    const fields = config?.fields as string[] | undefined;
+    const attrPath = field?.startsWith('span.') || field?.startsWith('resource.') 
+      ? field 
+      : `span.attributes["${field}"]`;
+
+    // Handle dynamically created transformations based on config.type
+    if (config?.type) {
+      switch (config.type) {
+        case 'delete':
+          return {
+            context: 'span',
+            statement: `delete_key(span.attributes, "${field}")`,
+          };
+        case 'mask':
+          return {
+            context: 'span',
+            statement: `set(${attrPath}, "********")`,
+          };
+        case 'hash':
+          return {
+            context: 'span',
+            statement: `set(${attrPath}, SHA256(${attrPath}))`,
+          };
+        case 'rename':
+          const newName = config.newName as string || `${field}_renamed`;
+          return {
+            context: 'span',
+            statement: `set(span.attributes["${newName}"], ${attrPath})`,
+          };
+        case 'replace':
+          const newValue = config.newValue as string || 'REDACTED';
+          return {
+            context: 'span',
+            statement: `set(${attrPath}, "${newValue}")`,
+          };
+        case 'move':
+          const from = config.from as string;
+          const to = config.to as string;
+          if (from === 'span' && to === 'resource') {
+            return {
+              context: 'span',
+              statement: `set(resource.attributes["${field}"], span.attributes["${field}"]) where span.attributes["${field}"] != nil`,
+            };
+          }
+          return {
+            context: 'resource',
+            statement: `set(span.attributes["${field}"], resource.attributes["${field}"]) where resource.attributes["${field}"] != nil`,
+          };
+        case 'drop':
+          return {
+            context: 'span',
+            statement: `delete_key(span.attributes, "${field}")`,
+          };
+        case 'add':
+          const value = config.value as string || 'default_value';
+          return {
+            context: 'span',
+            statement: `set(span.attributes["${field}"], "${value}")`,
+          };
+      }
+    }
+
+    // Handle auto-detected transformations (have config.autoDetected and config.fields)
+    if (config?.autoDetected && fields && fields.length > 0) {
+      const firstField = fields[0];
+      
+      switch (transformation.title) {
+        case 'Mask Auth Tokens':
+          return {
+            context: 'span',
+            statement: `set(span.attributes["${firstField}"], "********") where span.attributes["${firstField}"] != nil`,
+          };
+        case 'Hash UUIDs and GUIDs':
+        case 'Hash Email Addresses':
+          return {
+            context: 'span',
+            statement: `set(span.attributes["${firstField}"], SHA256(span.attributes["${firstField}"])) where span.attributes["${firstField}"] != nil`,
+          };
+        case 'Mask IP Addresses':
+          return {
+            context: 'span',
+            statement: `replace_pattern(span.attributes["${firstField}"], "\\\\d{1,3}\\\\.\\\\d{1,3}\\\\.\\\\d{1,3}\\\\.\\\\d{1,3}", "xxx.xxx.xxx.xxx")`,
+          };
+        case 'Drop High-Cardinality Attributes':
+        case 'Drop Verbose K8s Metadata':
+        case 'Drop Duplicate Attributes':
+          return {
+            context: 'span',
+            statement: `delete_key(span.attributes, "${firstField}")`,
+          };
+        case 'Truncate Large Values':
+          return {
+            context: 'span',
+            statement: `truncate_all(span.attributes, 256)`,
+          };
+        case 'Sample Health Check Traffic':
+          return {
+            context: 'span',
+            statement: `drop() where span.name == "health" or span.name == "ping"`,
+          };
+        case 'Limit Attribute Count':
+          return {
+            context: 'span',
+            statement: `limit(span.attributes, 40, [])`,
+          };
+        case 'Clean Resource Attributes':
+          // Generate statements for all detected resource fields
+          const resourceStatements = fields.map(f => {
+            const attrName = f.replace('resource.', '');
+            return `delete_key(resource.attributes, "${attrName}")`;
+          });
+          return {
+            context: 'resource',
+            statement: resourceStatements[0] || `delete_key(resource.attributes, "${firstField}")`,
+          };
+        case 'Review Span Attributes':
+          // Generate a keep_keys statement with the detected fields
+          const attrList = fields.map(f => `"${f}"`).join(', ');
+          return {
+            context: 'span',
+            statement: `keep_keys(span.attributes, [${attrList}])`,
+          };
+        default:
+          // Generate statement based on category
+          if (transformation.category === 'privacy') {
+            return {
+              context: 'span',
+              statement: `set(span.attributes["${firstField}"], "********") where span.attributes["${firstField}"] != nil`,
+            };
+          }
+          if (transformation.category === 'deletion') {
+            // Check if it's a resource attribute
+            if (firstField.startsWith('resource.')) {
+              const attrName = firstField.replace('resource.', '');
+              return {
+                context: 'resource',
+                statement: `delete_key(resource.attributes, "${attrName}")`,
+              };
+            }
+            return {
+              context: 'span',
+              statement: `delete_key(span.attributes, "${firstField}")`,
+            };
+          }
+          if (transformation.category === 'filtering') {
+            return {
+              context: 'span',
+              statement: `delete_key(span.attributes, "${firstField}")`,
+            };
+          }
+          if (transformation.category === 'attribute') {
+            return {
+              context: 'span',
+              statement: `keep_keys(span.attributes, ["${firstField}"])`,
+            };
+          }
+      }
+    }
+
+    // Handle transformations from the catalog by ID
+    switch (transformation.id?.replace(/^(auto-|trans-)/, '').split('-')[0]) {
+      case 'mask':
         return {
           context: 'span',
-          statement:
-            'replace_pattern(span.attributes["process.command_line"], "password=([^\\s]+)", "password=********")',
+          statement: `replace_pattern(span.attributes["${transformation.title.split(' ').pop()}"], ".*", "********")`,
         };
-      case 'Hash Email Addresses':
+      case 'hash':
         return {
           context: 'span',
-          statement: 'set(span.attributes["user.email"], sha256(span.attributes["user.email"]))',
+          statement: `set(span.attributes["user.email"], SHA256(span.attributes["user.email"]))`,
         };
-      case 'Sample High-Volume Traces':
+      case 'delete':
         return {
           context: 'span',
-          statement:
-            'set(span.attributes["telemetry.sample.keep"], true) where span.attributes["service.name"] in ["health-check", "cron"]',
+          statement: `delete_key(span.attributes, "${transformation.title.split(' ').pop()}")`,
+        };
+      case 'keep':
+        return {
+          context: 'span',
+          statement: `keep_keys(span.attributes, ["service.name", "http.method", "http.status_code"])`,
+        };
+      case 'add':
+        return {
+          context: 'span',
+          statement: `set(span.attributes["environment"], "production")`,
+        };
+      case 'copy':
+        return {
+          context: 'resource',
+          statement: `set(span.attributes["service.name"], resource.attributes["service.name"])`,
+        };
+      case 'drop':
+        return {
+          context: 'span',
+          statement: `drop() where span.attributes["http.target"] == "/health"`,
+        };
+      case 'sample':
+        return {
+          context: 'span',
+          statement: `drop() where Int(SpanID().String()[14:]) % 10 > 0`,
+        };
+      case 'extract':
+        return {
+          context: 'span',
+          statement: `replace_pattern(span.attributes["message"], "user_id=(?P<user_id>\\\\d+)", "")`,
+        };
+      case 'parse':
+        return {
+          context: 'span',
+          statement: `merge_maps(span.attributes, ParseJSON(span.attributes["json_body"]), "upsert")`,
+        };
+      case 'truncate':
+        return {
+          context: 'span',
+          statement: `truncate_all(span.attributes, 256)`,
         };
       default:
-        if (transformation.category === 'privacy') {
-          return {
-            context: 'span',
-            statement:
-              'replace_pattern(span.attributes["user.password"], "(?i)(password=)([^&\\"\\s]+)", "$${1}********")',
-          };
-        }
-        if (transformation.category === 'filtering') {
-          return {
-            context: 'span',
-            statement: 'keep_keys(span.attributes, ["service.name", "telemetry.priority"])',
-          };
-        }
-        return { context: 'span', statement: 'noop()' };
+        // Generate a descriptive comment instead of noop
+        return {
+          context: 'span',
+          statement: `# TODO: Configure ${transformation.title}`,
+        };
     }
   };
 
   const buildMetricStatement = (transformation: Transformation): BuiltStatement => {
-    switch (transformation.title) {
-      case 'Convert Metric Type':
+    const config = transformation.config as Record<string, unknown> | undefined;
+    
+    // Handle config-based transformations
+    if (config?.type) {
+      switch (config.type) {
+        case 'scale':
+          const factor = config.factor as number || 1.0;
+          return {
+            context: 'datapoint',
+            statement: `set(datapoint.double_value, datapoint.double_value * ${factor})`,
+          };
+        case 'convert':
+          return {
+            context: 'metric',
+            statement: `convert_gauge_to_sum("cumulative", false)`,
+          };
+      }
+    }
+
+    // Handle by transformation ID/title
+    switch (transformation.id?.replace(/^(auto-|trans-)/, '').split('-')[0]) {
+      case 'convert':
         return {
           context: 'metric',
-          statement: 'convert_gauge_to_sum("cumulative", false) where metric.type == "Gauge"',
+          statement: 'convert_gauge_to_sum("cumulative", false)',
         };
-      case 'Set Metric Metadata':
+      case 'scale':
         return {
-          context: 'metric',
-          statement: 'set(metric.description, "Updated description")',
+          context: 'datapoint',
+          statement: 'set(datapoint.double_value, datapoint.double_value * 0.001)',
         };
-      case 'Datapoint Operations':
-        return { context: 'metric', statement: 'scale_metric(1.0)' };
-      case 'Scale Values':
-        return { context: 'metric', statement: 'scale_metric(0.1, "kWh")' };
       default:
-        return { context: 'metric', statement: 'noop()' };
+        // Generate descriptive comment
+        return {
+          context: 'metric',
+          statement: `# TODO: Configure ${transformation.title}`,
+        };
     }
   };
 
   const buildLogStatement = (transformation: Transformation): BuiltStatement => {
-    switch (transformation.title) {
-      case 'Mask Passwords':
+    const config = transformation.config as Record<string, unknown> | undefined;
+    const field = config?.field as string | undefined;
+    const attrPath = field?.startsWith('log.') ? field : `log.attributes["${field}"]`;
+
+    // Handle dynamically created transformations based on config.type
+    if (config?.type) {
+      switch (config.type) {
+        case 'delete':
+          return {
+            context: 'log',
+            statement: `delete_key(log.attributes, "${field}")`,
+          };
+        case 'mask':
+          return {
+            context: 'log',
+            statement: `set(${attrPath}, "********")`,
+          };
+        case 'hash':
+          return {
+            context: 'log',
+            statement: `set(${attrPath}, SHA256(${attrPath}))`,
+          };
+        case 'replace':
+          const newValue = config.newValue as string || 'REDACTED';
+          return {
+            context: 'log',
+            statement: `set(${attrPath}, "${newValue}")`,
+          };
+      }
+    }
+
+    // Handle by transformation ID/category
+    switch (transformation.id?.replace(/^(auto-|trans-)/, '').split('-')[0]) {
+      case 'mask':
         return {
           context: 'log',
-          statement: 'replace_pattern(log.body, "(?i)(password=)([^&\\"\\s]+)", "$${1}********")',
+          statement: 'replace_pattern(log.body, "(?i)(password|secret|token)=([^&\\"\\s]+)", "$${1}=********")',
         };
-      case 'Hash Email Addresses':
+      case 'hash':
         return {
           context: 'log',
-          statement: 'set(log.attributes["user.email"], sha256(log.attributes["user.email"]))',
+          statement: 'set(log.attributes["user.email"], SHA256(log.attributes["user.email"]))',
+        };
+      case 'delete':
+        return {
+          context: 'log',
+          statement: `delete_key(log.attributes, "${transformation.title.split(' ').pop()}")`,
+        };
+      case 'parse':
+        return {
+          context: 'log',
+          statement: 'merge_maps(log.attributes, ParseJSON(log.body), "upsert") where IsString(log.body)',
+        };
+      case 'truncate':
+        return {
+          context: 'log',
+          statement: 'truncate_all(log.attributes, 256)',
         };
       default:
+        // Category-based fallback
         if (transformation.category === 'privacy') {
           return {
             context: 'log',
-            statement: 'replace_pattern(log.body, "(?i)(token=)([^&\\"\\s]+)", "$${1}********")',
+            statement: 'replace_pattern(log.body, "(?i)(password|secret|token|key)=([^&\\"\\s]+)", "$${1}=********")',
           };
         }
         if (transformation.category === 'filtering') {
           return {
             context: 'log',
-            statement: 'set(log.severity_text, "INFO") where log.severity_number < 9',
+            statement: 'drop() where log.severity_number < 9',
           };
         }
-        return { context: 'log', statement: 'noop()' };
+        if (transformation.category === 'deletion') {
+          return {
+            context: 'log',
+            statement: `delete_key(log.attributes, "${transformation.title.split(' ').pop() || 'attribute'}")`,
+          };
+        }
+        // Generate descriptive comment
+        return {
+          context: 'log',
+          statement: `# TODO: Configure ${transformation.title}`,
+        };
     }
   };
 
   const generateDefaultOttl = useCallback((): string => {
     const enabledTransformations = transformations.filter((transformation) => transformation.isEnabled !== false);
 
-    const lines: string[] = [
-      '# Generated OTTL configuration',
-      selectedTelemetrySource
-        ? `# Source: ${selectedTelemetrySource.name} (${selectedTelemetrySource.environment})`
-        : '# Source: Active telemetry selection',
-      'transform:',
-      '  error_mode: ignore',
-    ];
-
-    if (enabledTransformations.length === 0) {
-      lines.push('  trace_statements:', '    - noop()');
-      return lines.join('\n');
-    }
-
+    // Build statement groups
     const statementGroups = enabledTransformations
       .map((transformation) => {
         const signal = transformation.signal ?? 'trace';
@@ -757,6 +845,9 @@ function App() {
       log: ['log', 'scope', 'resource'],
     };
 
+    // Build transform processor statements
+    const transformStatements: string[] = [];
+    
     (['trace', 'metric', 'log'] as TransformationSignal[]).forEach((signal) => {
       const contexts = statementGroups[signal];
       const orderedContexts = [
@@ -768,7 +859,7 @@ function App() {
         return;
       }
 
-      lines.push(`  ${signal}_statements:`);
+      transformStatements.push(`      ${signal}_statements:`);
 
       orderedContexts.forEach((contextKey) => {
         const context = contextKey as StatementContext;
@@ -777,22 +868,88 @@ function App() {
           return;
         }
 
-        lines.push(`    - context: ${context}`);
-        lines.push('      statements:');
+        transformStatements.push(`        - context: ${context}`);
+        transformStatements.push('          statements:');
 
         entries.forEach(({ transformation, statement }: StatementDetails) => {
-          const comments = [
-            transformation.title ? `        # ${transformation.title}` : undefined,
-            transformation.description ? `        # ${transformation.description}` : undefined,
-          ].filter(Boolean) as string[];
-
-          lines.push(...comments, `        - ${statement}`);
+          if (transformation.title) {
+            transformStatements.push(`            # ${transformation.title}`);
+          }
+          transformStatements.push(`            - ${statement}`);
         });
       });
     });
 
+    // Generate complete OpenTelemetry Collector configuration
+    const lines: string[] = [
+      '# OpenTelemetry Collector Configuration',
+      '# Generated by OTTL.bin',
+      uploadedFileName ? `# Source: ${uploadedFileName}` : '# Source: User-uploaded telemetry',
+      `# Generated: ${new Date().toISOString()}`,
+      '',
+      '# Receivers - Configure your data sources',
+      'receivers:',
+      '  otlp:',
+      '    protocols:',
+      '      grpc:',
+      '        endpoint: 0.0.0.0:4317',
+      '      http:',
+      '        endpoint: 0.0.0.0:4318',
+      '',
+      '# Processors - Transform your telemetry',
+      'processors:',
+      '  batch:',
+      '    timeout: 1s',
+      '    send_batch_size: 1024',
+      '',
+    ];
+
+    if (enabledTransformations.length > 0) {
+      lines.push('  transform:');
+      lines.push('    error_mode: ignore');
+      lines.push(...transformStatements);
+    } else {
+      lines.push('  # No transformations configured');
+      lines.push('  # Add transformations in OTTL.bin to generate OTTL statements');
+    }
+
+    lines.push('');
+    lines.push('# Exporters - Configure your destinations');
+    lines.push('exporters:');
+    lines.push('  otlp:');
+    lines.push('    endpoint: "your-backend:4317"');
+    lines.push('    tls:');
+    lines.push('      insecure: false');
+    lines.push('  debug:');
+    lines.push('    verbosity: detailed');
+    lines.push('');
+    lines.push('# Service pipelines');
+    lines.push('service:');
+    lines.push('  pipelines:');
+    
+    // Add trace pipeline if we have trace transformations
+    const hasTraceTransforms = Object.keys(statementGroups.trace).length > 0;
+    lines.push('    traces:');
+    lines.push('      receivers: [otlp]');
+    lines.push(hasTraceTransforms ? '      processors: [batch, transform]' : '      processors: [batch]');
+    lines.push('      exporters: [otlp, debug]');
+    
+    // Add metrics pipeline if we have metric transformations
+    const hasMetricTransforms = Object.keys(statementGroups.metric).length > 0;
+    lines.push('    metrics:');
+    lines.push('      receivers: [otlp]');
+    lines.push(hasMetricTransforms ? '      processors: [batch, transform]' : '      processors: [batch]');
+    lines.push('      exporters: [otlp, debug]');
+    
+    // Add logs pipeline if we have log transformations
+    const hasLogTransforms = Object.keys(statementGroups.log).length > 0;
+    lines.push('    logs:');
+    lines.push('      receivers: [otlp]');
+    lines.push(hasLogTransforms ? '      processors: [batch, transform]' : '      processors: [batch]');
+    lines.push('      exporters: [otlp, debug]');
+
     return lines.join('\n');
-  }, [selectedTelemetrySource, transformations]);
+  }, [uploadedFileName, transformations]);
 
 const canonicalStringify = (value: unknown): string => {
   const seen = new WeakSet();
@@ -826,16 +983,6 @@ const canonicalStringify = (value: unknown): string => {
     }
   }, [generateDefaultOttl, hasCustomRawOttl]);
 
-  const handleTelemetrySelectionChange = (keys: Selection) => {
-    const next = Array.from(keys)[0];
-    if (typeof next === 'string') {
-      setSelectedTelemetrySourceId(next);
-      if (!hasCustomRawOttl) {
-        setRawOttl(generateDefaultOttl());
-      }
-    }
-  };
-
   const handleOpenRawEditor = () => setIsRawEditorOpen(true);
   const handleCloseRawEditor = () => setIsRawEditorOpen(false);
   const handleSaveRawOttl = (value: string) => {
@@ -850,24 +997,20 @@ const canonicalStringify = (value: unknown): string => {
     toast('Raw OTTL is synced back to the visual pipeline.');
   };
 
-  const handleExportOttl = async () => {
+  const handleExportOttl = () => {
     const ottl = hasCustomRawOttl ? rawOttl : generateDefaultOttl();
-    try {
-      await navigator.clipboard.writeText(ottl);
-      toast.success('OTTL copied to clipboard');
-    } catch (error) {
-      toast.error('Unable to copy to clipboard. Please copy manually.');
-    }
+    const blob = new Blob([ottl], { type: 'text/yaml' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'transformations.ottl.yaml';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    toast.success('OTTL file saved');
   };
 
-  const handleExportWorkspace = () => {
-    toast.success('Workspace export prepared (YAML + metadata)');
-  };
-
-  const handleReorder = (reordered: Transformation[]) => {
-    setTransformations(reordered);
-    toast('Transformations reordered');
-  };
 
   const handleToggle = (id: string, enabled: boolean) => {
     setTransformations((prev) =>
@@ -890,14 +1033,40 @@ const canonicalStringify = (value: unknown): string => {
   };
 
   const handleAddTransformation = (type: TransformationType) => {
+    // Map catalog IDs to config types for preview application
+    const configTypeMap: Record<string, string> = {
+      'mask-sensitive-data': 'mask',
+      'hash-pii': 'hash',
+      'delete-specific-attributes': 'delete',
+      'keep-only-listed': 'keep',
+      'add-static-attribute': 'add',
+      'copy-between-scopes': 'move',
+      'drop-by-condition': 'drop',
+      'sample-telemetry': 'sample',
+      'extract-regex-pattern': 'extract',
+      'parse-json-body': 'parseJson',
+      'truncate-values': 'truncate',
+      'convert-metric-type': 'convertMetric',
+      'scale-values': 'scale',
+    };
+
+    // Use active signal if compatible, otherwise use type's default signal
+    const targetSignal = type.compatibleSignals?.includes(activeSignal) 
+      ? activeSignal 
+      : type.signal ?? 'trace';
+
     const newTransformation: Transformation = {
       id: makeTransformationId(type.id),
       title: type.name,
       description: type.description,
       category: type.category,
       isEnabled: true,
-      signal: type.signal,
+      signal: targetSignal,
       compatibleSignals: type.compatibleSignals,
+      config: {
+        type: configTypeMap[type.id] || type.id,
+        catalogId: type.id,
+      },
     };
     setTransformations((prev) => [...prev, newTransformation]);
     toast.success(`Added: ${type.name}`);
@@ -914,6 +1083,7 @@ const canonicalStringify = (value: unknown): string => {
     setSamples([]);
     setCurrentSampleIndex(0);
     setIsProcessingSample(true);
+    setUploadedFileName(file.name);
     const toastId = toast.loading('Loading telemetry sample...');
     const reader = new FileReader();
     reader.onload = (event) => {
@@ -960,7 +1130,9 @@ const canonicalStringify = (value: unknown): string => {
           
           if (filteredDetected.length > 0) {
             // Add filtered detected transformations to the pipeline
+            // Note: OTTL editor is auto-updated via useEffect when transformations change
             setTransformations((prev) => [...prev, ...filteredDetected]);
+            
             toast.success(
               `Loaded ${parsed.length} records. Added ${filteredDetected.length} new recommended transformations!`,
               { id: toastId, duration: 5000 }
@@ -1056,23 +1228,155 @@ const canonicalStringify = (value: unknown): string => {
     }
   };
 
+  const handleAttributeAction = (action: string, key: string, value: unknown) => {
+    let transformation: Transformation | null = null;
+
+    switch (action) {
+      case 'delete':
+        transformation = {
+          id: makeTransformationId('delete'),
+          title: `Delete ${key}`,
+          description: `Remove ${key} from telemetry`,
+          category: 'deletion',
+          isEnabled: true,
+          signal: 'trace',
+          compatibleSignals: ['trace', 'log'],
+          config: { type: 'delete', field: key },
+        };
+        toast.success(`✓ Delete transformation added for ${key}`);
+        break;
+
+      case 'mask':
+        transformation = {
+          id: makeTransformationId('mask'),
+          title: `Mask ${key}`,
+          description: `Replace ${key} value with asterisks`,
+          category: 'privacy',
+          isEnabled: true,
+          signal: 'trace',
+          compatibleSignals: ['trace', 'log'],
+          config: { type: 'mask', field: key },
+        };
+        toast.success(`✓ Mask transformation added for ${key}`);
+        break;
+
+      case 'hash':
+        transformation = {
+          id: makeTransformationId('hash'),
+          title: `Hash ${key}`,
+          description: `Hash ${key} using SHA-256`,
+          category: 'privacy',
+          isEnabled: true,
+          signal: 'trace',
+          compatibleSignals: ['trace', 'log'],
+          config: { type: 'hash', field: key, algorithm: 'sha256' },
+        };
+        toast.success(`✓ Hash transformation added for ${key}`);
+        break;
+
+      case 'rename':
+        transformation = {
+          id: makeTransformationId('rename'),
+          title: `Rename ${key}`,
+          description: `Rename attribute key ${key}`,
+          category: 'attribute',
+          isEnabled: true,
+          signal: 'trace',
+          compatibleSignals: ['trace', 'metric', 'log'],
+          config: { type: 'rename', field: key, newName: `${key}_renamed` },
+        };
+        toast.success(`✓ Rename transformation added for ${key}. Edit to set new name.`);
+        break;
+
+      case 'replace':
+        transformation = {
+          id: makeTransformationId('replace'),
+          title: `Replace ${key} value`,
+          description: `Replace value in ${key}`,
+          category: 'formatting',
+          isEnabled: true,
+          signal: 'trace',
+          compatibleSignals: ['trace', 'log'],
+          config: { type: 'replace', field: key, oldValue: String(value), newValue: 'REDACTED' },
+        };
+        toast.success(`✓ Replace transformation added for ${key}. Edit to set new value.`);
+        break;
+
+      case 'move-to-resource':
+        transformation = {
+          id: makeTransformationId('move-resource'),
+          title: `Move ${key} to Resource`,
+          description: `Move ${key} from span to resource scope`,
+          category: 'attribute',
+          isEnabled: true,
+          signal: 'trace',
+          compatibleSignals: ['trace'],
+          config: { type: 'move', field: key, from: 'span', to: 'resource' },
+        };
+        toast.success(`✓ Move transformation added for ${key}`);
+        break;
+
+      case 'move-to-span':
+        transformation = {
+          id: makeTransformationId('move-span'),
+          title: `Move ${key} to Span`,
+          description: `Move ${key} from resource to span scope`,
+          category: 'attribute',
+          isEnabled: true,
+          signal: 'trace',
+          compatibleSignals: ['trace'],
+          config: { type: 'move', field: key, from: 'resource', to: 'span' },
+        };
+        toast.success(`✓ Move transformation added for ${key}`);
+        break;
+
+      case 'add-attribute':
+        transformation = {
+          id: makeTransformationId('add'),
+          title: 'Add New Attribute',
+          description: 'Add a new attribute to telemetry',
+          category: 'attribute',
+          isEnabled: true,
+          signal: 'trace',
+          compatibleSignals: ['trace', 'metric', 'log'],
+          config: { type: 'add', field: 'new_attribute', value: 'default_value' },
+        };
+        toast.success('✓ Add attribute transformation created. Edit to configure.');
+        break;
+
+      default:
+        toast.error(`Unsupported action: ${action}`);
+        return;
+    }
+
+    if (transformation) {
+      setTransformations((prev) => [...prev, transformation]);
+      if (!hasCustomRawOttl) {
+        setRawOttl(generateDefaultOttl());
+      }
+    }
+  };
+
   const activeSample = samples[currentSampleIndex] ?? null;
-  const transformedSample = useMemo(
-    () => (activeSample ? applyTransformations(activeSample, transformations) : null),
-    [activeSample, transformations],
-  );
+  const transformedSample = useMemo(() => {
+    if (!activeSample) return null;
+    
+    // If user has custom OTTL edits, apply the raw OTTL interpreter
+    if (hasCustomRawOttl && rawOttl) {
+      return applyRawOttl(activeSample, rawOttl);
+    }
+    
+    // Otherwise, apply UI transformations
+    return applyTransformations(activeSample, transformations);
+  }, [activeSample, transformations, hasCustomRawOttl, rawOttl]);
 
   const totalSamples = samples.length;
 
   return (
     <AppShell>
-      <HeaderBar
-        onTemplateClick={() => setIsTemplateModalOpen(true)}
-        onWorkspaceExport={handleExportWorkspace}
-        userName="Demo User"
-      />
+      <HeaderBar />
 
-      <div className="container mx-auto px-4 py-6 max-w-7xl pb-36 text-text-primary">
+      <div className="container mx-auto px-4 py-4 max-w-7xl pb-16 text-text-primary">
         <input
           type="file"
           accept=".json,.jsonl,.txt"
@@ -1085,57 +1389,10 @@ const canonicalStringify = (value: unknown): string => {
             }
           }}
         />
-        {/* Pipeline Header */}
-        <Card shadow="sm" radius="lg" className="mb-6 bg-surface/95 border border-border/60 shadow-lg/30">
-          <CardBody className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex-1 w-full">
-              <h2 className="text-xl font-semibold text-text-primary tracking-tight">
-                My Transformation Pipeline
-              </h2>
-              <div className="flex gap-2 mt-2 flex-wrap">
-                <Chip size="sm" color="primary" variant="flat" className="border border-primary/40 bg-primary/15 text-primary-foreground font-semibold">
-                  Telemetry Signals
-                </Chip>
-                <Chip size="sm" variant="flat" className="border border-border/60 bg-surface-soft/80 text-text-secondary">
-                  {transformations.length} transformations
-                </Chip>
-              </div>
-              {selectedTelemetrySource && (
-                <div className="mt-3 flex flex-wrap gap-2 text-xs text-text-secondary/80">
-                  <Chip size="sm" variant="flat" className="border border-border/60 bg-background-soft/70 text-text-secondary">
-                    {selectedTelemetrySource.environment}
-                  </Chip>
-                  <Chip size="sm" variant="flat" className="border border-border/60 bg-background-soft/70 text-text-secondary">
-                    {selectedTelemetrySource.recordsPerHour.toLocaleString()} spans/hour
-                  </Chip>
-                  <Chip size="sm" variant="flat" className="border border-border/60 bg-background-soft/70 text-text-secondary">
-                    {selectedTelemetrySource.lastSynced} • {selectedTelemetrySource.activeSamples} samples
-                  </Chip>
-                </div>
-              )}
-            </div>
-            <div className="w-full lg:w-72">
-              <Select
-                aria-label="Select telemetry source"
-                selectedKeys={new Set([selectedTelemetrySourceId])}
-                onSelectionChange={handleTelemetrySelectionChange}
-                variant="bordered"
-                classNames={{
-                  listbox: 'text-text-primary max-h-64',
-                  trigger: 'bg-background-soft/80 border-border/60 text-sm',
-                }}
-              >
-                {telemetrySources.map((source) => (
-                  <SelectItem key={source.id} textValue={source.name}>
-                    <div className="flex flex-col">
-                      <span className="text-sm font-medium text-text-primary">{source.name}</span>
-                      <span className="text-xs text-text-secondary/70">{source.description}</span>
-                    </div>
-                  </SelectItem>
-                ))}
-              </Select>
-            </div>
-            <div className="flex gap-2">
+        {/* Compact Toolbar - Only show when samples exist */}
+        {samples.length > 0 && (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
               <Button
                 size="sm"
                 variant="bordered"
@@ -1145,121 +1402,160 @@ const canonicalStringify = (value: unknown): string => {
                 isLoading={isProcessingSample}
                 onPress={() => fileInputRef.current?.click()}
               >
-                Upload Sample
+                Upload New Sample
               </Button>
-              <Button
-                variant="flat"
-                color="primary"
-                startContent={<PencilLine size={16} />}
-                className="bg-primary/15 border border-primary/40 text-text-primary"
-                onPress={handleOpenRawEditor}
-              >
-                Edit Raw OTTL
-              </Button>
-              <Button
-                variant="bordered"
-                color="secondary"
-                startContent={<FileDown size={16} />}
-                className="border-secondary/50 text-text-primary hover:bg-secondary/15"
-                onPress={handleExportOttl}
-              >
-                Export OTTL
-              </Button>
+              {uploadedFileName && (
+                <span className="text-sm text-text-secondary">
+                  <span className="font-medium text-text-primary">{uploadedFileName}</span>
+                  <span className="ml-2 text-text-secondary/60">({samples.length} records)</span>
+                </span>
+              )}
             </div>
-          </CardBody>
-        </Card>
+            <div className="flex items-center gap-2">
+              {transformations.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="light"
+                  className="text-text-secondary hover:text-text-primary"
+                  startContent={<PencilLine size={14} />}
+                  onPress={handleOpenRawEditor}
+                >
+                  Edit Raw OTTL
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
 
-        {/* Smart Suggestions */}
-        <Card shadow="md" radius="lg" className="mb-6 w-full bg-surface/95 border border-border/60">
-          <CardHeader className="px-4 py-3 border-b border-border/60 flex items-center gap-2">
-            <span className="text-lg font-semibold text-text-primary">Smart Suggestions</span>
-            <Chip size="sm" variant="flat" className="border border-border/60 bg-background-soft/70 text-text-secondary">
-              Real-time insights
-            </Chip>
-          </CardHeader>
-          <CardBody className="px-4 py-4">
-            {suggestions.length > 0 ? (
-              <SuggestionPanel suggestions={suggestions} />
-            ) : (
-              <p className="text-sm text-text-secondary">
-                All clear! We will surface optimization opportunities here once telemetry is loaded.
-              </p>
-            )}
-          </CardBody>
-        </Card>
-
-        {/* Main Content Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-7 xl:grid-cols-12 gap-6 text-text-primary items-stretch">
-          {/* Transformations Column */}
-          <div className="lg:col-span-4 xl:col-span-5 flex">
-            <Card
-              shadow="md"
-              radius="lg"
-              className="bg-surface/95 border border-border/60 flex flex-col h-full min-h-[640px] max-h-[calc(100vh-16rem)]"
+        {/* Empty State - Show when no samples uploaded */}
+        {samples.length === 0 && !isProcessingSample && (
+          <div className="flex flex-col items-center justify-center py-16 px-8 text-center">
+            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mb-6">
+              <Upload size={32} className="text-primary" />
+            </div>
+            <h2 className="text-2xl font-semibold text-text-primary mb-3">
+              Upload Your Telemetry
+            </h2>
+            <p className="text-text-secondary max-w-md mb-6">
+              Upload a JSON or JSONL file containing your OTLP telemetry data. 
+              We'll analyze it and suggest transformations to optimize your pipeline.
+            </p>
+            <Button
+              size="lg"
+              color="primary"
+              startContent={<Upload size={20} />}
+              onPress={() => fileInputRef.current?.click()}
             >
-              <CardHeader className="flex justify-between items-center px-4 py-3 flex-shrink-0 gap-3">
-                <h3 className="text-lg font-semibold text-text-primary">Transformations</h3>
-                <div className="flex items-center gap-2">
-                  <Button
-                    isIconOnly
-                    size="sm"
-                    variant="light"
-                    className="text-text-secondary hover:text-text-primary"
-                    onPress={() => setIsTransformationsModalOpen(true)}
-                    aria-label="Expand transformations"
-                  >
-                    <Maximize2 size={16} />
-                  </Button>
-                  <Button
-                    size="sm"
-                    color="primary"
-                    startContent={<Plus size={16} />}
-                    onPress={() => setIsAddModalOpen(true)}
-                  >
-                    Add Transformation
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardBody className="px-4 pt-4 pb-6 overflow-y-auto flex-1">
-                <TransformationList
-                  transformations={transformations}
-                  onReorder={handleReorder}
-                  onToggle={handleToggle}
-                  onEdit={handleEdit}
-                  onDelete={handleDelete}
-                />
-              </CardBody>
-            </Card>
+              Upload Telemetry Sample
+            </Button>
+            <p className="text-xs text-text-secondary/60 mt-4">
+              Supports OTLP JSON, JSONL, and key=value formats
+            </p>
           </div>
+        )}
 
-          {/* Right Column - Preview & Impact */}
-          <div className="lg:col-span-3 xl:col-span-7 flex" ref={previewSectionRef}>
-            <LivePreviewPanel
-              currentStep={Math.min(transformations.length, transformations.length)}
-              totalSteps={transformations.length}
-              currentSample={currentSampleIndex + 1}
-              totalSamples={totalSamples}
-              before={activeSample}
-              after={transformedSample}
-              onSampleChange={(sample) => {
-                const nextIndex = Math.min(Math.max(sample - 1, 0), totalSamples - 1);
-                setCurrentSampleIndex(nextIndex);
-              }}
-              onReplayAll={() => toast('Replaying the pipeline over uploaded samples...')}
-              onFieldAction={(field) => toast.info(`Selected ${field} for quick actions.`)}
-              availableActions={previewQuickActions}
-              onQuickAction={handlePreviewQuickAction}
-              isLoading={isProcessingSample}
-              errorMessage={sampleError ?? undefined}
-              onExpandRequest={() => setIsPreviewModalOpen(true)}
-            />
+        {/* Main Content Grid - Show when samples exist */}
+        {samples.length > 0 && (
+          <div className="grid grid-cols-1 lg:grid-cols-7 xl:grid-cols-12 gap-6 text-text-primary items-stretch">
+            {/* Transformations Column */}
+            <div className="lg:col-span-4 xl:col-span-5 flex">
+              <Card
+                shadow="md"
+                radius="lg"
+                className="bg-surface/95 border border-border/60 flex flex-col w-full min-h-[400px] max-h-[calc(100vh-10rem)]"
+              >
+                <CardHeader className="flex flex-col px-4 py-3 flex-shrink-0 gap-3">
+                  <div className="flex justify-between items-center w-full">
+                    <h3 className="text-lg font-semibold text-text-primary">Pipeline</h3>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        isIconOnly
+                        size="sm"
+                        variant="light"
+                        className="text-text-secondary hover:text-text-primary"
+                        onPress={() => setIsTransformationsModalOpen(true)}
+                        aria-label="Expand transformations"
+                      >
+                        <Maximize2 size={16} />
+                      </Button>
+                      <Button
+                        size="sm"
+                        color="primary"
+                        startContent={<Plus size={16} />}
+                        onPress={() => setIsAddModalOpen(true)}
+                      >
+                        Add
+                      </Button>
+                    </div>
+                  </div>
+                  <SignalTabs
+                    activeSignal={activeSignal}
+                    onSignalChange={setActiveSignal}
+                    tracesCount={signalCounts.trace}
+                    metricsCount={signalCounts.metric}
+                    logsCount={signalCounts.log}
+                    compact
+                  />
+                </CardHeader>
+                <CardBody className="px-4 pt-2 pb-6 overflow-y-auto flex-1 min-h-[280px]">
+                  {filteredTransformations.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-full min-h-[200px] text-center">
+                      <p className="text-text-secondary text-sm mb-3">
+                        No {activeSignal === 'trace' ? 'trace' : activeSignal === 'metric' ? 'metric' : 'log'} transformations yet
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="flat"
+                        color="primary"
+                        startContent={<Plus size={14} />}
+                        onPress={() => setIsAddModalOpen(true)}
+                      >
+                        Add Transformation
+                      </Button>
+                    </div>
+                  ) : (
+                    <TransformationList
+                      transformations={filteredTransformations}
+                      onReorder={(reordered) => {
+                        // Merge reordered signal transformations back into full list
+                        const otherSignals = transformations.filter((t) => (t.signal ?? 'trace') !== activeSignal);
+                        setTransformations([...otherSignals, ...reordered]);
+                      }}
+                      onToggle={handleToggle}
+                      onEdit={handleEdit}
+                      onDelete={handleDelete}
+                    />
+                  )}
+                </CardBody>
+              </Card>
+            </div>
+
+            {/* Right Column - Preview & Impact */}
+            <div className="lg:col-span-3 xl:col-span-7 flex" ref={previewSectionRef}>
+              <LivePreviewPanel
+                currentStep={Math.min(transformations.length, transformations.length)}
+                totalSteps={transformations.length}
+                currentSample={currentSampleIndex + 1}
+                totalSamples={totalSamples}
+                before={activeSample}
+                after={transformedSample}
+                onSampleChange={(sample) => {
+                  const nextIndex = Math.min(Math.max(sample - 1, 0), totalSamples - 1);
+                  setCurrentSampleIndex(nextIndex);
+                }}
+                onReplayAll={() => toast('Replaying the pipeline over uploaded samples...')}
+                onFieldAction={(field) => toast.info(`Selected ${field} for quick actions.`)}
+                availableActions={previewQuickActions}
+                onQuickAction={handlePreviewQuickAction}
+                onAttributeAction={handleAttributeAction}
+                isLoading={isProcessingSample}
+                errorMessage={sampleError ?? undefined}
+                onExpandRequest={() => setIsPreviewModalOpen(true)}
+              />
+            </div>
           </div>
-        </div>
+        )}
 
-        {/* Cost & Impact Analysis */}
-        <div className="mt-6">
-          <CostImpactPanel metrics={impactMetrics} />
-        </div>
       </div>
 
       {/* Transformations Expanded Modal */}
@@ -1272,26 +1568,35 @@ const canonicalStringify = (value: unknown): string => {
         classNames={{ base: 'max-h-[90vh] max-w-[1220px] w-[96vw]', closeButton: 'hidden' }}
       >
         <ModalContent className="bg-surface/95 border border-border/60 text-text-primary">
-          <ModalHeader className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-xl font-semibold">Transformations</h2>
-              <p className="text-sm text-text-secondary">Expanded view for detailed editing</p>
+          <ModalHeader className="flex flex-col gap-3">
+            <div className="flex items-center justify-between w-full">
+              <div>
+                <h2 className="text-xl font-semibold">Pipeline Configuration</h2>
+                <p className="text-sm text-text-secondary">Configure transformations for all signal types</p>
+              </div>
+              <Button
+                isIconOnly
+                variant="light"
+                className="text-text-secondary hover:text-text-primary"
+                onPress={() => setIsTransformationsModalOpen(false)}
+                aria-label="Close transformations modal"
+              >
+                <X size={18} />
+              </Button>
             </div>
-            <Button
-              isIconOnly
-              variant="light"
-              className="text-text-secondary hover:text-text-primary"
-              onPress={() => setIsTransformationsModalOpen(false)}
-              aria-label="Close transformations modal"
-            >
-              <X size={18} />
-            </Button>
+            <SignalTabs
+              activeSignal={activeSignal}
+              onSignalChange={setActiveSignal}
+              tracesCount={signalCounts.trace}
+              metricsCount={signalCounts.metric}
+              logsCount={signalCounts.log}
+            />
           </ModalHeader>
           <ModalBody className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2 text-text-secondary text-sm">
                 <Chip size="sm" variant="flat" className="border border-border/60 bg-background-soft/70 text-xs">
-                  {transformations.length} transformations
+                  {filteredTransformations.length} {activeSignal} transformations
                 </Chip>
               </div>
               <Button
@@ -1306,13 +1611,35 @@ const canonicalStringify = (value: unknown): string => {
                 Add Transformation
               </Button>
             </div>
-            <TransformationList
-              transformations={transformations}
-              onReorder={handleReorder}
-              onToggle={handleToggle}
-              onEdit={handleEdit}
-              onDelete={handleDelete}
-            />
+            {filteredTransformations.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-center">
+                <p className="text-text-secondary mb-3">
+                  No {activeSignal} transformations configured
+                </p>
+                <Button
+                  size="sm"
+                  color="primary"
+                  startContent={<Plus size={14} />}
+                  onPress={() => {
+                    setIsAddModalOpen(true);
+                    setIsTransformationsModalOpen(false);
+                  }}
+                >
+                  Add {activeSignal === 'trace' ? 'Trace' : activeSignal === 'metric' ? 'Metric' : 'Log'} Transformation
+                </Button>
+              </div>
+            ) : (
+              <TransformationList
+                transformations={filteredTransformations}
+                onReorder={(reordered) => {
+                  const otherSignals = transformations.filter((t) => (t.signal ?? 'trace') !== activeSignal);
+                  setTransformations([...otherSignals, ...reordered]);
+                }}
+                onToggle={handleToggle}
+                onEdit={handleEdit}
+                onDelete={handleDelete}
+              />
+            )}
           </ModalBody>
         </ModalContent>
       </Modal>
@@ -1358,6 +1685,7 @@ const canonicalStringify = (value: unknown): string => {
               onFieldAction={(field) => toast.info(`Selected ${field} for quick actions.`)}
               availableActions={previewQuickActions}
               onQuickAction={handlePreviewQuickAction}
+              onAttributeAction={handleAttributeAction}
               isLoading={isProcessingSample}
               errorMessage={sampleError ?? undefined}
               variant="modal"
@@ -1366,70 +1694,39 @@ const canonicalStringify = (value: unknown): string => {
         </ModalContent>
       </Modal>
 
-      {/* Bottom Action Bar */}
-      <div className="fixed bottom-0 left-0 right-0 bg-surface/95/98 backdrop-blur border-t border-border/70 shadow-2xl/40 z-50">
-        <div className="container mx-auto px-4 py-5 max-w-7xl">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between text-text-secondary text-sm">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold text-text-primary">{transformations.length}</span>
-              <span>transformations</span>
-              <span className="text-text-secondary/60">•</span>
-              <span>
-                <span className="font-semibold text-text-primary">
-                  {transformations.filter((t) => t.isEnabled).length}
-                </span>{' '}
-                enabled
-              </span>
-            </div>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+      {/* Minimal Status Bar - only shows when there are transformations */}
+      {transformations.length > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 bg-surface/98 backdrop-blur-sm border-t border-border/50 z-50">
+          <div className="container mx-auto px-4 py-3 max-w-7xl">
+            <div className="flex items-center justify-between text-text-secondary text-sm">
+              <div className="flex items-center gap-3">
+                <span>
+                  <span className="font-semibold text-text-primary">{transformations.length}</span> total
+                </span>
+                <span className="text-text-secondary/40">|</span>
+                <span className="text-purple-400">
+                  <span className="font-semibold">{signalCounts.trace}</span> traces
+                </span>
+                <span className="text-green-400">
+                  <span className="font-semibold">{signalCounts.metric}</span> metrics
+                </span>
+                <span className="text-blue-400">
+                  <span className="font-semibold">{signalCounts.log}</span> logs
+                </span>
+              </div>
               <Button
-                variant="light"
-                className="bg-background-soft/70 text-text-primary hover:bg-secondary/15"
-                onPress={() => {
-                  previewSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                  toast('Preview refreshes the before/after panel above with your latest transformations.');
-                }}
-              >
-                Preview
-              </Button>
-              <Button
-                variant="bordered"
+                size="sm"
                 color="primary"
                 onPress={handleExportOttl}
               >
                 Export OTTL
               </Button>
-              <Button
-                variant="bordered"
-                className="border-secondary/60 text-text-primary hover:bg-secondary/20"
-                startContent={<PencilLine size={16} />}
-                onPress={handleOpenRawEditor}
-              >
-                Edit Raw OTTL
-              </Button>
-              <Button color="success" onPress={() => toast.success('Deploying to Dash0...')}>
-                Deploy
-              </Button>
             </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Add Transformation Modal */}
-      <TemplateLibraryModal
-        isOpen={isTemplateModalOpen}
-        onClose={() => setIsTemplateModalOpen(false)}
-        templates={advancedTemplates}
-        transformationCatalog={defaultTransformations}
-        onApplyTemplate={(template) => {
-          const lookup = new Map(defaultTransformations.map((type) => [type.id, type]));
-          const templateTypes = template.transformations
-            .map((identifier) => lookup.get(identifier))
-            .filter((type): type is TransformationType => Boolean(type));
-          templateTypes.forEach((type) => handleAddTransformation(type));
-          toast.success(`Applied template: ${template.name}`);
-        }}
-      />
       <AddTransformationModal
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
