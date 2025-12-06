@@ -125,13 +125,6 @@ ottl-bin-ui/
 4. **Preview** before/after diffs in real-time
 5. **Export** the generated OTTL YAML for your OpenTelemetry Collector
 
-## Documentation
-
-- [Product Specification](docs/PRODUCT_SPEC.md)
-- [UX Design](docs/CONSOLIDATED_UX_DESIGN.md)
-- [User Journeys](docs/USER_JOURNEYS.md)
-- [Gap Analysis](docs/USER_JOURNEY_GAP_ANALYSIS.md)
-
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
