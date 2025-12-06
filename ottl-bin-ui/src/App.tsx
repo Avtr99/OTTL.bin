@@ -1075,41 +1075,55 @@ const canonicalStringify = (value: unknown): string => {
     }
   };
 
-  const handleFileSelection = (fileList: FileList | null) => {
-    const file = fileList?.[0];
-    if (!file) return;
+  const handleMultiFileSelection = async (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) return;
 
     setSampleError(null);
     setSamples([]);
     setCurrentSampleIndex(0);
     setIsProcessingSample(true);
-    setUploadedFileName(file.name);
-    const toastId = toast.loading('Loading telemetry sample...');
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const content = event.target?.result;
-      if (typeof content !== 'string') {
-        toast.error('Unable to read file contents', { id: toastId });
-        setSampleError('We could not read the uploaded file. Please try another sample or re-export the data.');
+    
+    const fileCount = fileList.length;
+    setUploadedFileName(fileCount > 1 ? `${fileCount} files` : fileList[0].name);
+    const toastId = toast.loading(`Loading ${fileCount} telemetry file${fileCount > 1 ? 's' : ''}...`);
+
+    try {
+      // Read all files in parallel
+      const fileContents = await Promise.all(
+        Array.from(fileList).map(file => 
+          new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => resolve(e.target?.result as string || '');
+            reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+            reader.readAsText(file);
+          })
+        )
+      );
+
+      // Parse all files and combine records
+      let allRecords: TelemetryRecord[] = [];
+      for (const content of fileContents) {
+        const parsed = parseTelemetryText(content);
+        allRecords = [...allRecords, ...parsed];
+      }
+
+      // Limit to 500 records total
+      allRecords = allRecords.slice(0, 500);
+
+      if (allRecords.length === 0) {
+        toast.error('No valid telemetry records found in files', { id: toastId });
+        setSampleError('We could not detect valid telemetry entries. Provide JSON, JSONL, or key=value lines exported from your telemetry platform.');
         setIsProcessingSample(false);
         return;
       }
 
-      try {
-        const parsed = parseTelemetryText(content).slice(0, 250);
-        if (parsed.length === 0) {
-          toast.error('No valid telemetry records found in file', { id: toastId });
-          setSampleError('We could not detect valid telemetry entries. Provide JSON, JSONL, or key=value lines exported from your telemetry platform.');
-          return;
-        }
-
-        setSamples(parsed);
-        setCurrentSampleIndex(0);
-        setSampleError(null);
-        
-        // Auto-detect transformations
-        const detected = autoDetectTransformations(parsed);
-        const summary = getDetectionSummary(parsed);
+      setSamples(allRecords);
+      setCurrentSampleIndex(0);
+      setSampleError(null);
+      
+      // Auto-detect transformations
+      const detected = autoDetectTransformations(allRecords);
+      const summary = getDetectionSummary(allRecords);
         
         if (detected.length > 0) {
           // Deduplicate against existing transformations
@@ -1130,11 +1144,10 @@ const canonicalStringify = (value: unknown): string => {
           
           if (filteredDetected.length > 0) {
             // Add filtered detected transformations to the pipeline
-            // Note: OTTL editor is auto-updated via useEffect when transformations change
             setTransformations((prev) => [...prev, ...filteredDetected]);
             
             toast.success(
-              `Loaded ${parsed.length} records. Added ${filteredDetected.length} new recommended transformations!`,
+              `Loaded ${allRecords.length} records from ${fileCount} file${fileCount > 1 ? 's' : ''}. Added ${filteredDetected.length} new transformations!`,
               { id: toastId, duration: 5000 }
             );
             
@@ -1146,27 +1159,18 @@ const canonicalStringify = (value: unknown): string => {
               );
             }, 1000);
           } else {
-            toast.success(`Loaded ${parsed.length} sample records (no new transformations detected)`, { id: toastId });
+            toast.success(`Loaded ${allRecords.length} records from ${fileCount} file${fileCount > 1 ? 's' : ''} (no new transformations detected)`, { id: toastId });
           }
         } else {
-          toast.success(`Loaded ${parsed.length} sample records`, { id: toastId });
+          toast.success(`Loaded ${allRecords.length} records from ${fileCount} file${fileCount > 1 ? 's' : ''}`, { id: toastId });
         }
-      } catch (error) {
-        toast.error('Failed to parse sample data. Ensure valid JSON or JSONL format.', { id: toastId });
-        setSampleError('Dash0 could not parse this file. Confirm the export is valid JSON, JSONL, or plain key=value pairs.');
-        setSamples([]);
-      } finally {
-        setIsProcessingSample(false);
-      }
-    };
-
-    reader.onerror = () => {
-      toast.error('Unable to read file contents', { id: toastId });
-      setSampleError('We hit a read error while opening the file. Please retry the upload.');
+    } catch (error) {
+      toast.error('Failed to parse files. Ensure valid JSON or JSONL format.', { id: toastId });
+      setSampleError('Could not parse the files. Confirm they contain valid JSON, JSONL, or key=value pairs.');
+      setSamples([]);
+    } finally {
       setIsProcessingSample(false);
-    };
-
-    reader.readAsText(file);
+    }
   };
 
   const handlePreviewQuickAction = (actionId: string, entry: LivePreviewDiffEntry) => {
@@ -1374,16 +1378,20 @@ const canonicalStringify = (value: unknown): string => {
 
   return (
     <AppShell>
-      <HeaderBar />
+      <HeaderBar 
+        onExport={handleExportOttl}
+        showExport={transformations.length > 0}
+      />
 
-      <div className="container mx-auto px-4 py-4 max-w-7xl pb-16 text-text-primary">
+      <div className="container mx-auto px-4 py-4 max-w-7xl pb-14 text-text-primary">
         <input
           type="file"
           accept=".json,.jsonl,.txt"
+          multiple
           ref={fileInputRef}
           className="hidden"
           onChange={(event) => {
-            handleFileSelection(event.target.files);
+            handleMultiFileSelection(event.target.files);
             if (event.target) {
               event.target.value = '';
             }
@@ -1694,33 +1702,24 @@ const canonicalStringify = (value: unknown): string => {
         </ModalContent>
       </Modal>
 
-      {/* Minimal Status Bar - only shows when there are transformations */}
+
+      {/* Signal Counts Footer */}
       {transformations.length > 0 && (
         <div className="fixed bottom-0 left-0 right-0 bg-surface/98 backdrop-blur-sm border-t border-border/50 z-50">
-          <div className="container mx-auto px-4 py-3 max-w-7xl">
-            <div className="flex items-center justify-between text-text-secondary text-sm">
-              <div className="flex items-center gap-3">
-                <span>
-                  <span className="font-semibold text-text-primary">{transformations.length}</span> total
-                </span>
-                <span className="text-text-secondary/40">|</span>
-                <span className="text-purple-400">
-                  <span className="font-semibold">{signalCounts.trace}</span> traces
-                </span>
-                <span className="text-green-400">
-                  <span className="font-semibold">{signalCounts.metric}</span> metrics
-                </span>
-                <span className="text-blue-400">
-                  <span className="font-semibold">{signalCounts.log}</span> logs
-                </span>
-              </div>
-              <Button
-                size="sm"
-                color="primary"
-                onPress={handleExportOttl}
-              >
-                Export OTTL
-              </Button>
+          <div className="container mx-auto px-4 py-2 max-w-7xl">
+            <div className="flex items-center justify-start gap-6 text-xs">
+              <span className="flex items-center gap-1.5 text-purple-400">
+                <span className="w-2 h-2 rounded-full bg-purple-400" />
+                <span className="font-semibold">{signalCounts.trace}</span> traces
+              </span>
+              <span className="flex items-center gap-1.5 text-green-400">
+                <span className="w-2 h-2 rounded-full bg-green-400" />
+                <span className="font-semibold">{signalCounts.metric}</span> metrics
+              </span>
+              <span className="flex items-center gap-1.5 text-blue-400">
+                <span className="w-2 h-2 rounded-full bg-blue-400" />
+                <span className="font-semibold">{signalCounts.log}</span> logs
+              </span>
             </div>
           </div>
         </div>

@@ -4,14 +4,21 @@ import {
   NavbarContent,
   NavbarItem,
   Link,
+  Button,
 } from '@heroui/react';
-import { Github, BookOpen } from 'lucide-react';
+import { Github, BookOpen, Download } from 'lucide-react';
+
+interface HeaderBarProps {
+  onExport?: () => void;
+  showExport?: boolean;
+}
 
 /**
  * HeaderBar - Top navigation bar
- * Contains logo and documentation links
+ * Contains logo, export button, and documentation links
  */
-export function HeaderBar() {
+export function HeaderBar({ onExport, showExport = false }: HeaderBarProps) {
+
   return (
     <Navbar
       maxWidth="full"
@@ -30,7 +37,22 @@ export function HeaderBar() {
         </div>
       </NavbarBrand>
 
-      <NavbarContent justify="end" className="gap-4 text-sm">
+      <NavbarContent justify="end" className="gap-2 sm:gap-4 text-sm">
+        {/* Export Button */}
+        {showExport && onExport && (
+          <NavbarItem>
+            <Button
+              size="sm"
+              color="primary"
+              startContent={<Download size={16} />}
+              onPress={onExport}
+              className="font-medium"
+            >
+              <span className="hidden sm:inline">Export OTTL</span>
+              <span className="sm:hidden">Export</span>
+            </Button>
+          </NavbarItem>
+        )}
         <NavbarItem>
           <Link
             href="https://opentelemetry.io/docs/collector/transforming-telemetry/"
